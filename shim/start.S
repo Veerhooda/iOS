@@ -198,75 +198,20 @@ _start:
 	msr	vbar_el1, x1
 	isb
 
-	/* 5. Initialize Ramoops console buffer header */
-	/* Base: 0xac0be000, sig = 0x43474244 ('DBGC') */
-	mov	x28, #0xe000
-	movk	x28, #0xac0b, lsl #16		/* x28 = 0xac0be000 */
+	/* 5. Zero .bss section */
+	adr	x1, _bss_start
+	adr	x2, _bss_end
+1:	cmp	x1, x2
+	b.hs	2f
+	str	xzr, [x1], #8
+	b	1b
 
-	mov	w1, #0x4244
-	movk	w1, #0x4347, lsl #16		/* 0x43474244 */
-	str	w1, [x28, #0]			/* buffer->sig */
-
-	/* Clear buffer write offset: start = 0, size = 0 */
-	str	wzr, [x28, #4]
-	str	wzr, [x28, #8]
-
-	/* 6. Output startup banner to Ramoops */
-	adr	x0, str_banner
-	bl	ramoops_puts
-
-	/* 7. Output CurrentEL */
-	adr	x0, str_el
-	bl	ramoops_puts
-	mrs	x0, CurrentEL
-	lsr	x0, x0, #2
-	bl	ramoops_puthex8
-
-	/* 8. Output FDT pointer (x19) */
-	adr	x0, str_fdt_ptr
-	bl	ramoops_puts
+2:	/* 6. Call C entry point with FDT pointer in x0 */
 	mov	x0, x19
-	bl	ramoops_puthex64
+	bl	shim_main
 
-	/* 9. Read and output FDT Magic from [x19] */
-	adr	x0, str_fdt_magic
-	bl	ramoops_puts
-	cbz	x19, 1f
-	/* Read 4 bytes big-endian: d0 0d fe ed */
-	ldrb	w1, [x19, #0]
-	ldrb	w2, [x19, #1]
-	ldrb	w3, [x19, #2]
-	ldrb	w4, [x19, #3]
-	lsl	w1, w1, #24
-	orr	w1, w1, w2, lsl #16
-	orr	w1, w1, w3, lsl #8
-	orr	w1, w1, w4
-	mov	w0, w1
-	bl	ramoops_puthex32
-	b	2f
-1:	adr	x0, str_null
-	bl	ramoops_puts
-2:
-
-	adr	x0, str_newline
-	bl	ramoops_puts
-
-	/* 10. Framebuffer Test (M1b Stripe Test) */
-	adr	x0, str_paint_start
-	bl	ramoops_puts
-
-	/* Paint Framebuffer: Base 0x03401000 */
-	bl	paint_framebuffer_stripes
-
-	adr	x0, str_paint_done
-	bl	ramoops_puts
-
-	/* 11. Delay 5 seconds for visual inspection */
-	bl	delay_5s
-
-	/* 12. Log reboot and trigger reset */
-	adr	x0, str_reset
-	bl	ramoops_puts
+	/* 7. If shim_main ever returns, reset */
+	b	do_reset
 
 do_reset:
 	/* Write 0 to PS_HOLD (0xfc4ab000) */

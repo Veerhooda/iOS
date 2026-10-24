@@ -17,7 +17,15 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
 
     start_s = os.path.join(shim_dir, "start.S")
+    main_c = os.path.join(shim_dir, "main.c")
+    console_c = os.path.join(shim_dir, "console.c")
+    fdt_c = os.path.join(shim_dir, "fdt.c")
+
     start_o = os.path.join(out_dir, "start.o")
+    main_o = os.path.join(out_dir, "main.o")
+    console_o = os.path.join(out_dir, "console.o")
+    fdt_o = os.path.join(out_dir, "fdt.o")
+
     shim_ld = os.path.join(shim_dir, "shim.ld")
     shim_elf = os.path.join(out_dir, "shim.elf")
     shim_bin = os.path.join(out_dir, "shim.bin")
@@ -27,14 +35,21 @@ def main():
     boot_img = os.path.join(out_dir, "shim-boot.img")
     mkbootimg = os.path.join(repo_root, "tools", "mkbootimg.py")
 
-    print("[1/5] Assembling start.S with clang...")
-    subprocess.run([
-        "clang", "-target", "aarch64-none-elf", "-c", start_s, "-o", start_o
-    ], check=True)
+    cflags = [
+        "-O2", "-ffreestanding", "-nostdlib", "-fno-pic",
+        "-mstrict-align", "-fno-stack-protector", "-mgeneral-regs-only",
+        "-Wall", "-Wextra"
+    ]
+
+    print("[1/5] Compiling shim sources with clang...")
+    subprocess.run(["clang", "-target", "aarch64-none-elf", "-c", start_s, "-o", start_o], check=True)
+    subprocess.run(["clang", "-target", "aarch64-none-elf"] + cflags + ["-c", main_c, "-o", main_o], check=True)
+    subprocess.run(["clang", "-target", "aarch64-none-elf"] + cflags + ["-c", console_c, "-o", console_o], check=True)
+    subprocess.run(["clang", "-target", "aarch64-none-elf"] + cflags + ["-c", fdt_c, "-o", fdt_o], check=True)
 
     print("[2/5] Linking shim.elf with ld.lld...")
     subprocess.run([
-        "ld.lld", "-T", shim_ld, start_o, "-o", shim_elf
+        "ld.lld", "-T", shim_ld, start_o, main_o, console_o, fdt_o, "-o", shim_elf
     ], check=True)
 
     print("[3/5] Extracting raw binary with llvm-objcopy...")

@@ -261,3 +261,43 @@ After device warm-reset and boot into Android, retrieved `/sys/fs/pstore/console
 5. **Ramoops channel operational**: The 256 KB console buffer at `0xac0be000` survives warm PMIC resets and dumps cleanly into Linux userspace.
 6. **PS_HOLD software reset**: Writing 0 to `0xfc4ab000` triggers immediate SoC reset.
 
+---
+
+## M1c: Extended C Runtime, FDT Parser & Display Pipeline Analysis
+
+### 1. Extended C Runtime Execution
+Integrated freestanding C runtime: [`shim/main.c`](shim/main.c), [`shim/console.c`](shim/console.c), [`shim/fdt.c`](shim/fdt.c), [`shim/font.h`](shim/font.h).
+Executed `fastboot boot out/shim-boot.img` with live 20-second countdown loop and full FDT `/chosen` inspection.
+Retrieved `/sys/fs/pstore/console-ramoops-0`:
+```text
+=======================================================
+  [ONEPLUS2-SHIM] M1 On-Screen Text Console Active!
+=======================================================
+  CurrentEL: EL1, FDT: 0x0000000001E00000
+  Initrd start: 0x0000000002000000
+  Initrd end:   0x00000000020C3E6B
+  Bootargs: sched_enable_hmp=1 sched_enable_power_aware=1 androidboot.hardware=qcom user_debug=31 msm_rtb.filter=0x37 ehci-hcd.park=3 lpm_levels.sleep_disabled=1 boot_cpus=0-3 loop.max_part=7 androidboot.selinux=permissive buildvariant=userdebug
+  Countdown: Rebooting into Android in 20s... 
+  Countdown: Rebooting into Android in 19s... 
+  ...
+  Countdown: Rebooting into Android in 01s... 
+  Countdown: Rebooting into Android in 00s... 
+
+[SHIM] Resetting SoC via PS_HOLD (0xfc4ab000)...
+```
+
+### 2. Ramdisk & Memory Findings
+* **Ramdisk Relocation**: Little Kernel relocates the ramdisk to **`0x02000000`** (`32 MiB` physical offset), spanning to `0x020C3E6B` (802,411 bytes).
+* **Headroom**: The space between `0x02000000` and the display reservation at `0x03401000` provides **20 MiB** of contiguous memory for XNU boot payloads without clobbering memory.
+* **Bootargs**: LK dynamically injected `sched_enable_hmp=1 sched_enable_power_aware=1` into `/chosen/bootargs`.
+
+### 3. Display Subsystem Reverse-Engineering & Explanation
+During the 20-second countdown, the physical display remained on the static OnePlus boot logo.
+Disassembly and reverse-engineering of the device's native `backup/aboot.img` revealed the exact hardware reason:
+1. **Command Mode Panel**: The OnePlus 2 panel is `14049_JD35695_1080P_CMD_PANEL` (`jd35695 1080p cmd mode dsi panel`), which contains internal Graphic RAM (GRAM) with autonomous self-refresh.
+2. **`target_display_shutdown()`**: In Qualcomm LK `boot_linux()`, right before calling TrustZone (`0x02001001`) to jump to the 64-bit kernel, LK invokes `target_display_shutdown()`, which powers off the MIPI-DSI host controller and display clocks.
+3. **Continuous Splash Not Passed**: In Linux dmesg, `mdss_mdp_splash_parse_dt: splash mem child node is not present` confirms that continuous splash is intentionally not passed from LK on this target.
+4. **Conclusion**: Writing to DRAM at `0x03401000` without reinitializing the DSI host controller and sending a DSI command-mode kickoff (`MDSS_MDP_REG_CTL_START` / `0xfd90201c`) does not update the panel's internal GRAM. The panel simply continues self-refreshing the 1+ logo from its own internal GRAM.
+5. **Debug Channel**: **Ramoops (`0xac0be000`) is confirmed as the primary, 100% reliable bare-metal debug console** for all subsequent milestones (M2 through M5).
+
+
