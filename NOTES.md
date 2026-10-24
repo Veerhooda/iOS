@@ -31,7 +31,7 @@ Queried via `/sys/class/graphics/fb0/`, dmesg, and `live.dts`:
 * **Panel Resolution**: **1080 × 1920** (16:9 aspect ratio)
 * **Virtual Size**: `1080, 3840` (double-buffered)
 * **Pixel Format**: 32-bit ARGB/RGBA (`bits_per_pixel = 32`)
-* **Row Stride**: **`4352` bytes** (`1080 * 4 = 4320` bytes, padded to 4352 bytes / 1088 words for 128-byte hardware alignment)
+* **Row Stride**: **`4352` bytes** (`1080 * 4 = 4320`, padded to 4352 bytes / 1088 words for 128-byte hardware alignment)
 
 ### 3. Interrupt Controller (GICv2)
 Confirmed via `interrupt-controller@f9000000`:
@@ -75,6 +75,47 @@ Confirmed via `/sys/class/mmc_host/mmc0` and `sdhci@f9824900`:
   * `hc_irq`: SPI 123 (INTID `32 + 123 = 155`)
   * `pwr_irq`: SPI 138 (INTID `32 + 138 = 170`)
 * **Storage Medium**: 64 GB eMMC 5.0 (`mmcblk0`)
+
+---
+
+## Recovery & Emergency Download (EDL 9008) Reference
+
+* **USB Identification**:
+  * **EDL Mode**: `05c6:9008` (Qualcomm HS-USB QDLoader 9008)
+  * **Fastboot Mode**: `18d1:d00d` or `2a70:9011`
+  * **Android / ADB Mode**: `05c6:9025` or `05c6:9001` (`idVendor = 1478` decimal)
+* **Entering EDL Mode on OnePlus 2**:
+  1. Software trigger via ADB: `adb reboot edl`
+  2. Software trigger via fastboot: `fastboot oem edl` or `fastboot reboot-edl`
+  3. Hardware key combination: Power off completely, hold **Volume Up** while connecting the USB cable to PC.
+  4. Hardware fallback: Deep Flash Cable (short D+ to GND with button) or motherboard test points under the back cover.
+* **Unbrick Utility**: OnePlus 2 MSM Download Tool (uses Sahara / Firehose protocol `MPRG8994.mbn` + `prog_emmc_firehose_8994_lite.mbn` to reflash all partitions).
+
+---
+
+## Code Analysis: `ios-sweet` Components vs. OnePlus 2 Adaptations
+
+### 1. `NOTES.md`
+* `sweet`: Relied on 16 KB pages and 64-bit high memory bank (`0x100000000`).
+* `oneplus2`: Strict 4 KB pages (`ARM_PGSHIFT = 12`), 32-bit address space `< 4 GB` using the main `0x10200000` bank.
+
+### 2. `shim/` Directory
+* **`start.S`**: Linux AArch64 Image header (`_head`) at `0x00080000`. Sets up stack, zeroes BSS, enters `shim_main(x0)` with FDT in `x0`.
+  * *OP2 change*: Compatible as-is for LK bootloader; keep single-core `cpus=1` (omit PSCI secondaries).
+* **`mmu.c`**: Configures EL1 Stage-1 MMU and page tables.
+  * *OP2 change*: **Must rewrite from 16 KB to 4 KB translation granule**. L2 blocks are 2 MB (instead of 32 MB), L3 pages are 4 KB. Framebuffer `0x03401000` mapped as Normal Non-Cacheable; carveouts `0x06300000 - 0x10200000` unmapped.
+* **`console.c`**: Pixel-font console rendered directly into continuous splash.
+  * *OP2 change*: Set resolution to 1080×1920, stride to 4352 bytes, framebuffer base to `0x03401000`.
+* **`loader.c`**: iBoot-style Mach-O segment loader and `boot_args` builder.
+  * *OP2 change*: Point `physBase` to `0x10200000`, set `v_width=1080`, `v_height=1920`, `v_rowBytes=4352`, `v_baseAddr=0x03401000`.
+* **`ufs.c`**: UFS host controller driver.
+  * *OP2 change*: Disable entirely (OP2 uses eMMC 5.0, not UFS). Boot M1 without storage or via RAM disk.
+* **`build.sh`**: Builds and packages boot image.
+  * *OP2 change*: Use `clang -target aarch64-none-elf` and pack with `mkbootimg` header version 0.
+
+### 3. `tools/mkadt.py`
+* Emits binary Apple Device Tree (ADT).
+  * *OP2 change*: Set `dram-base = 0x10200000`, `dram-size = 0xe7e00000` (~3.7 GB). Set GIC node to GICv2 MMIO distributor `0xf9000000` and CPU interface `0xf9002000`. Switch product node to iPhone 6 / 6 Plus identity.
 
 ---
 
