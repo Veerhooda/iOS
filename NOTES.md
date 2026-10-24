@@ -300,4 +300,81 @@ Disassembly and reverse-engineering of the device's native `backup/aboot.img` re
 4. **Conclusion**: Writing to DRAM at `0x03401000` without reinitializing the DSI host controller and sending a DSI command-mode kickoff (`MDSS_MDP_REG_CTL_START` / `0xfd90201c`) does not update the panel's internal GRAM. The panel simply continues self-refreshing the 1+ logo from its own internal GRAM.
 5. **Debug Channel**: **Ramoops (`0xac0be000`) is confirmed as the primary, 100% reliable bare-metal debug console** for all subsequent milestones (M2 through M5).
 
+---
+
+## M2: XNU Target Pinning, Custom Board Config & Apple Device Tree (ADT) Generation
+
+### 1. Target IPSW & Kernelcache Extraction
+* **Target Identity**: iPhone 6 Plus (`iPhone7,1` / `N56AP`), Apple A8 (`T7000`), native **1080x1920** display resolution matching the OnePlus 2 panel.
+* **Firmware**: iOS 12.5.7 (Build `16H81`).
+* **Source IPSW URL**:
+  `https://updates.cdn-apple.com/2023FCSWinter/fullrestores/032-14318/BA4FE4A1-083E-4B6F-980B-D62C13835060/iPhone_5.5_12.5.7_16H81_Restore.ipsw`
+* **Artifacts Extracted**:
+  - `Firmware/all_flash/DeviceTree.n56ap.im4p` (120,111 bytes)
+  - `kernelcache.release.iphone7` (14,063,402 bytes)
+* **Kernelcache Decompression**:
+  - Parsed IM4P container ASN.1 DER sequence.
+  - Decompressed `complzss` stream (Apple LZSS format: `N=4096`, `F=18`, `THRESHOLD=2`, 384-byte header) into raw Mach-O 64-bit binary `kernel.raw` (28,242,440 bytes).
+* **Exact Kernel Release String**:
+  ```text
+  Darwin Kernel Version 18.7.0: Fri Aug 19 23:28:26 PDT 2022; root:xnu-4903.272.5~1/RELEASE_ARM64_T7000
+  ```
+* **Source Tree Pinning**: Cloned Apple open-source distribution release `xnu-4903.270.47` (macOS 10.14.6 Supplemental Update, exact Darwin 18.7.0 / `xnu-4903` branch).
+
+### 2. Little Kernel Ramdisk Headroom Reverse-Engineered
+* Reverse-engineered Little Kernel's ramdisk bounds checking in `backup/aboot.img` (`0x0f92cdfc` - `0x0f92ce28`):
+  ```arm
+  add   r3, r10, r3          @ r3 = ramdisk_addr + ramdisk_size
+  cmp   r3, #261095424       @ 261095424 = 0x0F900000 (LK base)
+  bhi   error
+  ```
+* **Confirmed Headroom**: Little Kernel allows the ramdisk to occupy any memory from `0x02000000` up to `0x0F900000` (**217 MiB** headroom).
+* The uncompressed 28.2 MB XNU payload fits with over 188 MiB of remaining headroom.
+
+### 3. Custom MSM8994 Board Configuration (`xnu-4903.270.47`)
+Modeled after Apple's clean `BCM2837` (Raspberry Pi 3) implementation, avoiding all Apple-proprietary SPR traps (`ARM64_REG_HID*`, `CYC_CFG`) and TrustZone monitor calls:
+1. **`pexpert/pexpert/arm64/MSM8994.h`**:
+   - `NO_MONITOR 1` & `NO_ECORE 1` (direct EL1 execution, single-cluster bringup).
+   - `MSM8994_VTIMER_INTID 20` (ARM generic virtual timer PPI 4: $16 + 4 = 20$).
+   - `MSM8994_TIMEBASE_FREQ 19200000` (19.2 MHz clock frequency).
+   - Memory-mapped GICv2 distributor (`0xf9000000`) and CPU interface (`0xf9002000`).
+   - Carved panic log buffer (`PLATFORM_PANIC_LOG_PADDR = 0xabf00000`, 1 MiB).
+   - Ramoops persistent debug console (`RAMOOPS_CONSOLE_PADDR = 0xac0be000`, 256 KiB).
+2. **`pexpert/pexpert/arm64/board_config.h`**:
+   - Defined `ARM64_BOARD_CONFIG_MSM8994` with `__ARM_L2CACHE_SIZE_LOG__ 21` and `CPU_COUNT 1`.
+3. **`makedefs/MakeInc.def`**:
+   - Added `MSM8994` to `SUPPORTED_ARM64_MACHINE_CONFIGS`.
+   - Flags: `MACHINE_FLAGS_ARM64_MSM8994 = -DARM64_BOARD_CONFIG_MSM8994 -march=armv8-a`.
+4. **`osfmk/arm/proc_reg.h`**:
+   - Defined 64-byte I-cache and D-cache line sizes (`MMU_I_CLINE 6`, `MMU_CLINE 6`).
+5. **`pexpert/arm/pe_identify_machine.c`**:
+   - Registered `op2-io` / `msm8994-io` SoC platform expert matching.
+6. **`config/MASTER.arm64.msm8994`**:
+   - Minimal embedded ARM64 kernel configuration based on `MASTER.arm64.bcm2837`.
+* Staged and committed on branch `msm8994` in `xnu/xnu-4903.270.47`.
+
+### 4. Apple Device Tree Generator ([`tools/mkadt.py`](tools/mkadt.py))
+* Implemented minimal Apple Device Tree builder for OnePlus 2 / MSM8994:
+  - **Root Identity**: `N56AP`, `iPhone7,1`, `oneplus,oneplus2`, `qcom,msm8994`, `AppleARM`.
+  - **DRAM Range**: `dram-base = 0x10200000`, `dram-size = 0x9bd00000` (~2.44 GiB).
+  - **Panic Region**: `/pram` carved from top of DRAM at `0xabf00000` (1 MiB).
+  - **Interrupts**: GICv2 distributor (`0xf9000000`), CPU interface (`0xf9002000`), timer PPI 20.
+  - **`/product` Node**: Extracted 47 properties from real iOS 12.5.7 `DeviceTree.n56ap.im4p` (scale factor 3x, large-format-phone, graphics fallbacks, MobileGestalt identity).
+  - **Debug Console Node**: `/op2-fbcon` pointing to Ramoops console buffer (`0xac0be000`, 256 KiB, $1080 \times 1920$ stride 4352).
+  - **SIP Policies**: Relaxed SIP (`lp-sip0 = 0x6f`, `lp-sip1 = 0x1`) in `/chosen/asmb`.
+  - Verified serialization into binary ADT format (6,632 bytes) with both hardware and `--qemu` modes.
+
+### 5. Payload Packaging & Shim Bootloader ([`tools/mkpayload.py`](tools/mkpayload.py) & [`shim/loader.c`](shim/loader.c))
+* **Format & ABI**:
+  - `xnu-4903` requires `BOOT_LINE_LENGTH = 256` (total `boot_args` size is exactly 384 bytes, unlike newer XNU versions which use 608 bytes).
+  - Verified structure alignment with `_Static_assert` in freestanding C.
+* **Payload Packager**:
+  - `tools/mkpayload.py` extracts Mach-O 64-bit segments, resolves 2 MB aligned virtual base (`0xfffffff007000000`), bundles ADT and kernel arguments into `OP2XNU01` format.
+* **Bootloader Integration**:
+  - `shim/loader.c` parses the ramdisk at `0x02000000`, copies segments to high-bank physical DRAM (`0x10200000`+), sets up `boot_args` at physical address `ba_pa`, flushes CPU caches and pipeline (`dsb sy; ic iallu; dsb sy; isb`), and transfers control to XNU entry point with `x0 = ba_pa`.
+* **Verification**:
+  - Built full `out/xnu-boot.img` (28.6 MB).
+  - Validated ELF linkage, DTB appending, and mkbootimg packaging.
+
+
 
