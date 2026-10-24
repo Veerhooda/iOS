@@ -5,87 +5,115 @@ Porting Apple's XNU kernel and iOS userland components to the OnePlus 2 (`oneplu
 
 ---
 
-## Hardware & Architecture Profile (OnePlus 2 vs. sweet)
+## Hardware Facts & System Architecture (Verified from Hardware)
 
-| Component | OnePlus 2 (`oneplus2`) | sweet (`SM7150`) | Architecture & Porting Strategy |
+### 1. Memory Map & Usable RAM Ranges
+Extracted from live `/proc/iomem` and decompiled `live.dts` (`MSM8994v2.1 MTP`):
+* **Lower RAM Bank**: `0x00000000 - 0x062fffff` (~99 MB)
+  * Linux Kernel loaded at: `0x00080000`
+  * Kernel Data: `0x01445000 - 0x018999f7`
+* **Qualcomm Protected Carve-Outs (Removed from OS)**:
+  * `0x06300000 - 0x07000000`: `memory_hole` (13 MB)
+  * `0x07000000 - 0x0ca00000`: `modem_mem` (90 MB)
+  * `0x0ca00000 - 0x0e900000`: `peripheral_mem` (31 MB)
+  * `0x0e900000 - 0x10200000`: `tzapp_mem` (25 MB)
+* **Main Usable System RAM**:
+  * **`0x10200000 - 0xf7ffffff`**: **~3.7 GB contiguous RAM bank** (completely free of carve-outs except minor diagnostic regions).
+  * Minor reservations in upper RAM:
+    * `0xac000000 - 0xac100000`: `ramoops_mem` (1 MB)
+    * `0xac200000 - 0xac300000`: `param_mem` (1 MB)
+    * `0xac400000 - 0xac500000`: `memory_mtp` (1 MB)
+
+### 2. Display & Continuous Framebuffer
+Queried via `/sys/class/graphics/fb0/`, dmesg, and `live.dts`:
+* **Driver**: Qualcomm Mobile Display Subsystem (`mdssfb_90000`, `fd998000.qcom,mdss_dsi`)
+* **Continuous Splash Physical Base**: **`0x03401000`** (node: `cont_splash_mem@0`, size: `0x2200000` = 34 MB)
+* **Panel Resolution**: **1080 × 1920** (16:9 aspect ratio)
+* **Virtual Size**: `1080, 3840` (double-buffered)
+* **Pixel Format**: 32-bit ARGB/RGBA (`bits_per_pixel = 32`)
+* **Row Stride**: **`4352` bytes** (`1080 * 4 = 4320` bytes, padded to 4352 bytes / 1088 words for 128-byte hardware alignment)
+
+### 3. Interrupt Controller (GICv2)
+Confirmed via `interrupt-controller@f9000000`:
+* **Compatible**: `"qcom,msm-qgic2"` (ARM GICv2 compliant)
+* **Distributor Interface (`GICD`)**: **`0xf9000000`**, size: `0x1000` (4 KB)
+* **CPU Interface (`GICC`)**: **`0xf9002000`**, size: `0x1000` (4 KB)
+* **Significance**: Unlike `sweet`'s GICv3 (which uses system registers `ICC_*`), MSM8994 strictly requires memory-mapped MMIO register accesses to `0xf9002000` to acknowledge and end interrupts (`GICC_IAR`, `GICC_EOIR`, `GICC_PMR`).
+
+### 4. CPU Topology & Bring-Up Method
+Confirmed via `cpus` node in `live.dts`:
+* **Cluster 0 (LITTLE)**:
+  * `cpu@0`: ARM Cortex-A53 (MPIDR/reg `0x00`) - **Boot Core**
+  * `cpu@1`: ARM Cortex-A53 (MPIDR/reg `0x01`)
+  * `cpu@2`: ARM Cortex-A53 (MPIDR/reg `0x02`)
+  * `cpu@3`: ARM Cortex-A53 (MPIDR/reg `0x03`)
+* **Cluster 1 (big)**:
+  * `cpu@4`: ARM Cortex-A57 (MPIDR/reg `0x100`)
+  * `cpu@5`: ARM Cortex-A57 (MPIDR/reg `0x101`)
+  * `cpu@6`: ARM Cortex-A57 (MPIDR/reg `0x102`)
+  * `cpu@7`: ARM Cortex-A57 (MPIDR/reg `0x103`)
+* **Enable Method**: `"qcom,8994-arm-cortex-acc"`
+* **PSCI**: **None** (no PSCI node in DTB; secondary core boot uses Qualcomm ACC / APCS and SCM boot-address registers).
+
+### 5. Architected Timer
+Confirmed via `timer` node in `live.dts`:
+* **Compatible**: `"arm,armv8-timer"`
+* **Clock Frequency**: `0x124f800` = **19,200,000 Hz (19.2 MHz)**
+* **PPI Interrupts**:
+  * Secure Physical Timer: PPI 2 (INTID 18)
+  * Non-Secure Physical Timer: PPI 3 (INTID 19)
+  * Virtual Timer (CNTV): PPI 4 (INTID 20)
+  * Hypervisor Timer: PPI 1 (INTID 17)
+
+### 6. Storage Controller (eMMC 5.0)
+Confirmed via `/sys/class/mmc_host/mmc0` and `sdhci@f9824900`:
+* **Controller**: Qualcomm SDHCI MSM (`sdhc1`)
+* **Compatible**: `"qcom,sdhci-msm"`
+* **Host Controller Registers (`hc_mem`)**: **`0xf9824900`** (size: `0x1a0`)
+* **Vendor Core Registers (`core_mem`)**: **`0xf9824000`** (size: `0x800`)
+* **Interrupts**:
+  * `hc_irq`: SPI 123 (INTID `32 + 123 = 155`)
+  * `pwr_irq`: SPI 138 (INTID `32 + 138 = 170`)
+* **Storage Medium**: 64 GB eMMC 5.0 (`mmcblk0`)
+
+---
+
+## Partition Backup Log (Day 2)
+
+All 40 partitions backed up from TWRP into `backup/` and verified with SHA-256 against device-computed hashes:
+
+| Partition | Block Dev | Size (Bytes) | SHA-256 Digest (Prefix) |
 | :--- | :--- | :--- | :--- |
-| **SoC** | Qualcomm Snapdragon 810 (MSM8994) | Snapdragon 732G (SM7150) | Older big.LITTLE architecture |
-| **CPU Cores** | 4x Cortex-A57 + 4x Cortex-A53 | 2x Cortex-A76 + 6x Cortex-A55 | Heterogeneous ARMv8.0-A |
-| **ISA** | ARMv8.0-A | ARMv8.2-A | No ARMv8.1 LSE atomics (`CAS`, `LDADD`) in hardware |
-| **MMU Granule** | **4 KB & 64 KB only** (`TGran16 == 0x0`) | 16 KB & 4 KB (`TGran16 == 0x1`) | **Targeting iOS 12.5.7 (iPhone 6 / 5s)** which uses native 4 KB pages (`ARM_PGSHIFT = 12`) |
-| **Interrupts** | **ARM GICv2** (`qcom,msm-qgic2`) | ARM GICv3 (System Regs `ICC_*`) | Memory-mapped CPU interface (`0xf9002000`) & distributor (`0xf9000000`) |
-| **Storage** | **eMMC 5.0** (Qualcomm SDCC/SDHCI) | UFS 2.2 (UFSHCI) | Need SDHCI driver in XNU, or boot early userland via RAM disk (`mockfs`) |
-| **Display** | 1080×1920 (16:9), MDSS DSI | 1080×2400 (20:9), DSI | Matches iPhone 6 Plus 1080p native target; continuous splash in RAM |
-| **Bootloader** | Qualcomm Little Kernel (LK) | Qualcomm ABL (UEFI) | Android `boot.img` v0 format; base `0x00000000`, kernel `0x00080000`, tags `0x00000100` |
-| **RAM** | 3 GB or 4 GB LPDDR4 | 6 GB / 8 GB LPDDR4X | Full address space `< 4 GB`; carve-out mapping discipline required |
+| `boot` | `mmcblk0p35` | 67,108,864 | `28eb63da5aa56bc8...` |
+| `recovery` | `mmcblk0p36` | 67,108,864 | `251efaf9cd6119dc...` |
+| `persist` | `mmcblk0p37` | 33,554,432 | `73a53d784e251b67...` |
+| `modemst1` | `mmcblk0p17` | 1,572,864 | `5d544ee320cf857f...` |
+| `modemst2` | `mmcblk0p18` | 1,572,864 | `f7e10085e938169f...` |
+| `fsg` | `mmcblk0p8` | 1,572,864 | `106f0647ae10a651...` |
+| `fsc` | `mmcblk0p15` | 1,024 | `5f70bf18a0860070...` |
+| `aboot` | `mmcblk0p10` | 1,048,576 | `aab4682faa93c487...` |
+| `sbl1` | `mmcblk0p26` | 1,048,576 | `198be0270102b081...` |
+| `tz` | `mmcblk0p29` | 1,048,576 | `002640e62ec2bbd1...` |
+| `rpm` | `mmcblk0p31` | 512,000 | `bfec3e0b0ccf4f39...` |
+| `DRIVER` | `mmcblk0p25` | 33,554,432 | `e557b79ed38d4052...` |
+| `LOGO` | `mmcblk0p24` | 16,777,216 | `4388734fbed3a16d...` |
+| `modem` | `mmcblk0p1` | 83,886,080 | `3d4b1c5f9b2ccff0...` |
+
+Full checksums recorded in [`backup/SHA256SUMS`](backup/SHA256SUMS).
+Second-pass checksum verification: **PASSED** on all critical partitions.
 
 ---
 
-## Day 1: Setup & Environment Verification Log
+## Boot Image Header & Repack Verification (M0 Test)
 
-### 1. Host Machine & Connection
-* **Host OS**: macOS Darwin (arm64, Apple Silicon). Direct USB connection (native USB stack, avoiding WSL/VM pass-through flakiness).
-* **Connection Status**: USB connection stable, device recognized in fastboot and adb.
-* **Cable & Port**: Direct USB connection verified.
-
-### 2. Connected Device Verification
-* **Command**: `adb devices`
-  * Result: `ebd7ee57    device`
-* **Device Model**:
-  * `ro.product.model`: `ONE A2003` (OnePlus 2)
-  * `ro.product.device`: `OnePlus2`
-  * `ro.build.version.release`: `10`
-* **Battery Level Check**:
-  * `adb shell cat /sys/class/power_supply/battery/capacity`
-  * Result: **61%** (verified > 50% safety requirement)
-
-### 3. Toolchain & Tool Status
-* `adb`: `/opt/homebrew/bin/adb` (Android Debug Bridge 35.0.2)
-* `fastboot`: `/opt/homebrew/bin/fastboot`
-* `dtc`: `/opt/homebrew/bin/dtc` (Device Tree Compiler 1.7.2)
-* `qemu-system-aarch64`: `/opt/homebrew/bin/qemu-system-aarch64` (QEMU 10.2.0)
-* `lldb`: `/usr/bin/lldb` (Apple LLVM debugger with aarch64 & `gdb-remote` target support)
-* `python3`: `/usr/bin/python3` (Python 3.9.6) and `/opt/homebrew/bin/python3`
-* `clang`: `/usr/bin/clang` (tested: `clang -target aarch64-none-elf` compiles bare-metal aarch64 ELF objects cleanly)
-* `mkbootimg.py`: Staged in `tools/mkbootimg.py` (AOSP / LineageOS implementation)
-* `unpack_bootimg.py`: Staged in `tools/unpack_bootimg.py`
-* `unpack_bootv2.py`: Staged in `tools/unpack_bootv2.py`
-* `adt.py`: Staged in `tools/adt.py`
-
-### 4. Repository Configuration
-* Initialized git repository.
-* Configured `.gitignore` to prevent committing sensitive device calibration data, partition dumps, and serial numbers:
-  * Excluded: `backup/`, `dtb/`, `recovery/`, `reference/`, `research/`, `logs/`, `out/`, `*.img`, `*.simg`, `*.bin`, `*.elf`, `*.o`, `*.dtb`.
-
----
-
-## Command History & Verification Record
-
-| Timestamp | Command | Exit Code | Observation / Output |
-| :--- | :--- | :--- | :--- |
-| 2026-10-24 19:09 | `which adb fastboot dtc qemu-system-aarch64 ...` | 1 | adb, fastboot, dtc, qemu, python3, lldb found. |
-| 2026-10-24 19:10 | `adb devices; fastboot devices` | 0 | Found device `ebd7ee57`. |
-| 2026-10-24 19:12 | `adb shell getprop ro.product.model ...` | 0 | Confirmed `ONE A2003` (`OnePlus2`), Android 10, Battery 61%. |
-| 2026-10-24 19:13 | `echo "void _start() { while(1); }" \| clang -target aarch64-none-elf ...` | 0 | Verified clang can generate aarch64 ELF binaries. |
-| 2026-10-24 19:18 | `curl ... LineageOS/.../mkbootimg.py` | 0 | Downloaded standalone `mkbootimg.py`. |
-| 2026-10-24 19:21 | `curl ... LineageOS/.../unpack_bootimg.py` | 0 | Downloaded standalone `unpack_bootimg.py`. |
-| 2026-10-24 19:22 | `git init` | 0 | Git repository initialized with clean `.gitignore`. |
-
----
-
-## Next Steps (Day 2)
-
-1. **Partition Backups**:
-   * Boot into recovery (e.g. TWRP for `oneplus2`) temporarily via `fastboot boot recovery.img`.
-   * Pull critical partitions to `backup/`:
-     * `persist`
-     * `modemst1`, `modemst2`, `fsg`, `fsc` (contains IMEI, baseband NVRAM and radio calibration)
-     * `boot`
-     * `recovery`
-2. **Extract Live Kernel & Device Tree (DTB)**:
-   * Unpack the stock/working `boot.img` using `tools/unpack_bootimg.py` into `dtb/boot_unpacked`.
-   * Extract the Qualcomm QCDT/DTB containing MSM8994 memory map, continuous splash address, interrupt numbers, and peripheral base addresses.
-3. **Begin Bare-Metal Boot Shim**:
-   * Port `shim/` to use a 4 KB MMU translation table.
-   * Target Little Kernel `boot.img` v0 header.
-   * Validate early framebuffer console on the OnePlus 2 screen.
+Unpacked stock `backup/boot.img` with `tools/unpack_bootimg.py`:
+* **Header Version**: `0`
+* **Page Size**: `4096`
+* **Base Address**: `0x00000000`
+* **Kernel Load Address**: `0x00008000` (offset: `0x8000`)
+* **Ramdisk Load Address**: `0x01000000` (offset: `0x1000000`)
+* **Tags Load Address**: `0x00000100` (offset: `0x100`)
+* **Command Line**:
+  `androidboot.hardware=qcom user_debug=31 msm_rtb.filter=0x37 ehci-hcd.park=3 lpm_levels.sleep_disabled=1 boot_cpus=0-3 loop.max_part=7 androidboot.selinux=permissive buildvariant=userdebug`
+* **Kernel & DTB**: `dtb/boot_unpacked/kernel` is `Image.gz-dtb` with 7 appended DTBs. DTB 0 corresponds to `Qualcomm Technologies, Inc. MSM8994v2.1 MTP` (287,284 bytes).
+* **Repacked Test Image**: Generated [`out/repack-test.img`](out/repack-test.img). Unpacked and verified: kernel and ramdisk match byte-for-byte.
