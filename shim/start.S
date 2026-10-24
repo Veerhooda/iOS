@@ -186,6 +186,18 @@ _start:
 	/* 1. Mask all interrupts */
 	msr	daifset, #0xf
 
+	/* Immediately write recovery reboot cookie (0x77665502) to IMEM (0xfe87f65c) on hardware */
+	mov	x2, #0x40000000
+	adr	x21, _head
+	cmp	x21, x2
+	b.hs	.Lskip_imem_cookie
+	mov	x4, #0xf65c
+	movk	x4, #0xfe87, lsl #16
+	mov	w5, #0x5502
+	movk	w5, #0x7766, lsl #16
+	str	w5, [x4]
+.Lskip_imem_cookie:
+
 	/* 2. Save FDT pointer in x19 and actual Entry PC in x21 */
 	mov	x19, x0
 	adr	x21, _head
@@ -265,6 +277,12 @@ do_reset:
 	mov	x2, #0x40000000
 	cmp	x21, x2
 	b.hs	reset_spin
+	/* Write recovery cookie (0x77665502) to IMEM restart_reason (0xfe87f65c) */
+	mov	x4, #0xf65c
+	movk	x4, #0xfe87, lsl #16
+	mov	w5, #0x5502
+	movk	w5, #0x7766, lsl #16
+	str	w5, [x4]
 	/* Write 0 to PS_HOLD (0xfc4ab000) */
 	mov	x1, #0xb000
 	movk	x1, #0xfc4a, lsl #16		/* 0xfc4ab000 */
