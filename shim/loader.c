@@ -186,12 +186,15 @@ const char *loader_boot(uintptr_t fdt_addr)
 	ba->physBase = p->phys_base;
 	ba->memSize = p->mem_size;
 	ba->topOfKernelData = top;
-	ba->Video.v_baseAddr = 0xac0be000UL; /* Ramoops console */
-	ba->Video.v_display = 1;
-	ba->Video.v_rowBytes = 4352;
-	ba->Video.v_width = 1080;
-	ba->Video.v_height = 1920;
-	ba->Video.v_depth = 32;
+	/* Since panel scanout is shut down by LK, set Video to 0 so XNU treats it as
+	 * "No video - forcing serial mode" and avoids stomping 8 MB onto physical RAM.
+	 */
+	ba->Video.v_baseAddr = 0;
+	ba->Video.v_display = 0;
+	ba->Video.v_rowBytes = 0;
+	ba->Video.v_width = 0;
+	ba->Video.v_height = 0;
+	ba->Video.v_depth = 0;
 	ba->machineType = 0;
 	ba->deviceTreeP = adt_pa - pa_of_va_base; /* VA when MMU is on */
 	ba->deviceTreeLength = (uint32_t)p->adt_size;
