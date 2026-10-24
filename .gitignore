@@ -1,0 +1,27 @@
+# Device dumps: persist/modemst/fsg hold IMEI + calibration; live DT holds serial
+backup/
+dtb/
+recovery/
+
+# Reference trees & downloads
+reference/
+research/
+
+# Logs & temp binaries
+logs/
+*.img
+*.simg
+*.bin
+*.elf
+*.o
+*.dtb
+
+# Build artifacts
+out/
+shim/out/
+xnu/out/
+xnu/out-*/
+__pycache__/
+
+# OS artifacts
+.DS_Store
