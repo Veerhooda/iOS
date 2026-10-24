@@ -163,3 +163,55 @@ Unpacked stock `backup/boot.img` with `tools/unpack_bootimg.py`:
   * Android 10 booted successfully to the home screen.
   * Verified via adb: system online (`uptime: up 0 min`).
   * Confirms header values, base addresses, page size, and kernel entry parameters are 100% accurate for the OnePlus 2 bootloader.
+
+---
+
+## Control Experiment: Raw Uncompressed ARM64 Image & Appended DTB Rule
+
+Before writing any shim code, we tested the raw-Image path by decompressing the stock kernel gzip stream and appending the 7 DTBs directly:
+
+### 1. Stock Kernel Extraction
+* **Stock `kernel` binary**: 9,917,564 bytes (`Image.gz-dtb`)
+* **Gzip Payload**: Offset `0x0` to `0x7be425` (8,119,333 bytes)
+* **Appended DTBs**: Offset `0x7be425` to EOF (1,798,231 bytes, 7 DTBs)
+* **Uncompressed `Image`**: 18,140,680 bytes (~17.30 MB)
+
+### 2. First 64 Bytes of Uncompressed Stock Image
+```text
+0000:  10 00 00 14 00 00 00 00 00 00 08 00 00 00 00 00   ................
+0010:  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00   ................
+0020:  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00   ................
+0030:  00 00 00 00 00 00 00 00 41 52 4d 64 00 00 00 00   ........ARMd....
+```
+* `code0`: `0x14000010` (`b 0x40` branch past 64-byte header)
+* `code1`: `0x00000000`
+* `text_offset`: `0x0000000000080000` (`0x80000`)
+* `image_size`: `0x0000000000000000` (`0` in Linux 3.10 AArch64 v0 header)
+* `flags`: `0x0000000000000000`
+* `magic`: `0x644d5241` (`ARM\x64`)
+
+### 3. Empirical Discovery: How Little Kernel Locates the DTB
+1. **Test A (Raw Concatenation, `image_size = 0`)**:
+   `fastboot boot out/test-uncompressed.img` $\rightarrow$ `FAILED (remote: 'dtb not found')`
+2. **Test B (Populating `image_size` at offset 16 with file length)**:
+   `fastboot boot out/test-uncompressed-with-size.img` $\rightarrow$ `FAILED (remote: 'dtb not found')`
+3. **Test C (Writing DTB offset at offset `0x2C`)**:
+   * Little Kernel (`platform/msm_shared/dev_tree.c`) function `dev_tree_appended()` reads `app_dtb_offset` from `kernel + DTB_OFFSET`, where `DTB_OFFSET = 0x2C` (legacy 32-bit zImage end offset).
+   * In 64-bit arm64 Linux 3.10 headers, offset `0x2C` was zero (reserved), causing `dtb = kernel + 0` $\rightarrow$ failure!
+   * We packed `uint32_t(len(Image)) = 0x0114ce08` at offset `0x2C` (byte 44) of `Image` and appended the DTBs at that offset.
+   * `fastboot boot out/test-uncompressed-dtb-2c.img`:
+     ```text
+     Sending 'boot.img' (20260 KB)                      OKAY [  0.483s]
+     Booting                                            OKAY [  0.079s]
+     Finished. Total time: 0.565s
+     ```
+   * **Result: Android 10 booted up completely to userspace!**
+   * **Rule Confirmed**: For any uncompressed ARM64 image on OnePlus 2, the exact byte offset where the appended DTBs start **MUST be written at offset `0x2C`**!
+
+---
+
+## Ramoops Log Persistence Verification
+Checked on live device:
+* `[ 0.000000] OEM: Found ramoops_mem, memory base 0x00000000ac000000, size 1 MiB`
+* `[ 0.235146] ramoops: attached 0x100000@0xac000000, ecc: 0/0`
+* Sysfs `/sys/fs/pstore`: `console-ramoops-0` (262 KB) and `pmsg-ramoops-0` (4 KB) exist and survive warm reboots!
