@@ -40,7 +40,7 @@ static void ramoops_init(void)
 	buf->size = 0;
 }
 
-static void ramoops_putc(char c)
+void ramoops_putc(char c)
 {
 	volatile struct persistent_ram_buffer *buf = (volatile void *)RAMOOPS_CONSOLE;
 	uint32_t sz = buf->size;
@@ -51,13 +51,13 @@ static void ramoops_putc(char c)
 	}
 }
 
-static void ramoops_puts(const char *s)
+void ramoops_puts(const char *s)
 {
 	while (*s)
 		ramoops_putc(*s++);
 }
 
-static void ramoops_hex(uint64_t v, int digits)
+void ramoops_hex(uint64_t v, int digits)
 {
 	static const char hex[] = "0123456789ABCDEF";
 	for (int i = 0; i < digits; i++)
@@ -89,92 +89,65 @@ static void delay_sec(uint32_t sec)
 
 static void reset_soc(void)
 {
-	ramoops_puts("\n[SHIM] Resetting SoC via PS_HOLD (0xfc4ab000)...\n");
+	ramoops_puts("\n[SHIM] Setting restart_reason to RECOVERY (0x77665502)...\n");
+	/* Write recovery reboot cookie to IMEM restart_reason (0xfe87f65c) */
+	*(volatile uint32_t *)0xfe87f65cUL = 0x77665502;
+
+	ramoops_puts("[SHIM] Deasserting PS_HOLD (0xfc4ab000) for PMIC reset...\n");
 	*(volatile uint32_t *)0xfc4ab000UL = 0;
 	for (;;)
 		__asm__ volatile("wfe");
 }
 
-void shim_main(uint64_t fdt_addr)
+void shim_main(uint64_t fdt_addr, uint64_t entry_pc)
 {
 	/* 1. Initialize Ramoops console */
 	ramoops_init();
 	ramoops_puts("\n=======================================================\n");
-	ramoops_puts("  [ONEPLUS2-SHIM] M1 On-Screen Text Console Active!\n");
+	ramoops_puts("  [ONEPLUS2-SHIM] M1 Bare-Metal Diagnostics & FDT Audit\n");
 	ramoops_puts("=======================================================\n");
 
 	uint32_t el = get_current_el();
-	ramoops_puts("  CurrentEL: EL");
+	ramoops_puts("  Actual Entry PC : 0x");
+	ramoops_hex(entry_pc, 16);
+	ramoops_puts("\n  CurrentEL       : EL");
 	ramoops_putc('0' + el);
-	ramoops_puts(", FDT: 0x");
+	ramoops_puts("\n  FDT Pointer (x0): 0x");
 	ramoops_hex(fdt_addr, 16);
 	ramoops_puts("\n");
 
-	/* 2. Clear Framebuffer to dark navy blue */
-	con_clear(0x000a1a3a);
-
-	/* 3. Render Header */
-	con_str("TARGET", "OnePlus 2 (MSM8994 / ONE A2003)");
-	con_str("PROJECT", "Darwin/XNU & iOS Porting Shim");
-	con_str("STATUS", "M1 On-Screen Diagnostic Console");
-	con_skip();
-
-	/* 4. CPU & Firmware Details */
-	char el_str[] = "EL0";
-	el_str[2] = '0' + el;
-	con_str("EXEC EL", el_str);
-	con_hex("FDT ADDR", fdt_addr);
-
 	uint32_t fdt_magic = *(volatile uint32_t *)fdt_addr;
-	con_hex32("FDT MAGC", __builtin_bswap32(fdt_magic));
+	ramoops_puts("  FDT Header Magic: 0x");
+	ramoops_hex(__builtin_bswap32(fdt_magic), 8);
+	ramoops_puts("\n");
 
-	/* 5. Parse FDT /chosen */
+	/* 2. Parse FDT /chosen */
 	uint64_t rd_start = 0, rd_end = 0;
 	if (fdt_chosen_u64(fdt_addr, "linux,initrd-start", &rd_start)) {
-		con_hex("RD START", rd_start);
-		ramoops_puts("  Initrd start: 0x");
+		ramoops_puts("  Initrd Start    : 0x");
 		ramoops_hex(rd_start, 16);
 		ramoops_puts("\n");
 	}
 	if (fdt_chosen_u64(fdt_addr, "linux,initrd-end", &rd_end)) {
-		con_hex("RD END  ", rd_end);
-		ramoops_puts("  Initrd end:   0x");
+		ramoops_puts("  Initrd End      : 0x");
 		ramoops_hex(rd_end, 16);
-		ramoops_puts("\n");
+		ramoops_puts(" (Length: ");
+		ramoops_hex(rd_end - rd_start, 8);
+		ramoops_puts(" bytes)\n");
 	}
 
-	char cmdline[128];
+	char cmdline[256];
 	if (fdt_chosen_str(fdt_addr, "bootargs", cmdline, sizeof(cmdline))) {
-		con_str("CMDLINE", cmdline);
-		ramoops_puts("  Bootargs: ");
+		ramoops_puts("  Bootargs        : ");
 		ramoops_puts(cmdline);
 		ramoops_puts("\n");
 	}
 
-	con_skip();
-	con_str("DISPLAY", "1080x1920 @ 32bpp, Stride 4352");
-	con_str("STACK", "0x00400000 (Safe Bare-Metal)");
-	con_str("RAMOOPS", "0xac0be000 (256 KB Persistent)");
-	con_skip();
+	/* 3. Comprehensive FDT Dump (/memory, /reserved-memory, /cpus) */
+	fdt_dump_all(fdt_addr);
 
-	/* 6. Live 20-second Countdown */
-	int count_row = con_get_row();
-	char count_msg[] = "Rebooting into Android in 20s... ";
-	for (int i = 20; i >= 0; i--) {
-		con_set_row(count_row);
-		count_msg[26] = '0' + (i / 10);
-		count_msg[27] = '0' + (i % 10);
-		con_str("COUNTDWN", count_msg);
-
-		ramoops_puts("  Countdown: ");
-		ramoops_puts(count_msg);
-		ramoops_puts("\n");
-
-		delay_sec(1);
-	}
-
-	/* 7. Reset */
-	con_str("RESET", "Triggering PMIC reset via PS_HOLD...");
-	delay_sec(1);
+	/* 4. Quick 2-second delay before rebooting directly into TWRP */
+	ramoops_puts("\n[SHIM] Fast-loop rebooting directly into TWRP Recovery...\n");
+	delay_sec(2);
 	reset_soc();
 }

@@ -186,8 +186,9 @@ _start:
 	/* 1. Mask all interrupts */
 	msr	daifset, #0xf
 
-	/* 2. Save FDT pointer in x19 */
+	/* 2. Save FDT pointer in x19 and actual Entry PC in x21 */
 	mov	x19, x0
+	adr	x21, _head
 
 	/* 3. Setup safe stack at 0x00400000 */
 	mov	x1, #0x00400000
@@ -206,8 +207,9 @@ _start:
 	str	xzr, [x1], #8
 	b	1b
 
-2:	/* 6. Call C entry point with FDT pointer in x0 */
+2:	/* 6. Call C entry point with FDT pointer in x0, actual Entry PC in x1 */
 	mov	x0, x19
+	mov	x1, x21
 	bl	shim_main
 
 	/* 7. If shim_main ever returns, reset */
