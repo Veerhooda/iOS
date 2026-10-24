@@ -1,9 +1,10 @@
 /*
- * OnePlus 2 (MSM8994) M1 Diagnostic Console Main
+ * OnePlus 2 (MSM8994) Boot Shim Main Entry Point
  */
 #include <stdint.h>
 #include "console.h"
 #include "fdt.h"
+#include "loader.h"
 
 #define RAMOOPS_CONSOLE	0xac0be000UL
 #define RAMOOPS_SIG	0x43474244U
@@ -87,7 +88,7 @@ static void delay_sec(uint32_t sec)
 	}
 }
 
-static void reset_soc(void)
+static void reset_to_recovery(void)
 {
 	ramoops_puts("\n[SHIM] Setting restart_reason to RECOVERY (0x77665502)...\n");
 	/* Write recovery reboot cookie to IMEM restart_reason (0xfe87f65c) */
@@ -104,7 +105,7 @@ void shim_main(uint64_t fdt_addr, uint64_t entry_pc)
 	/* 1. Initialize Ramoops console */
 	ramoops_init();
 	ramoops_puts("\n=======================================================\n");
-	ramoops_puts("  [ONEPLUS2-SHIM] M1 Bare-Metal Diagnostics & FDT Audit\n");
+	ramoops_puts("  [ONEPLUS2-SHIM] M2 Bootloader & XNU Stage Active\n");
 	ramoops_puts("=======================================================\n");
 
 	uint32_t el = get_current_el();
@@ -121,19 +122,32 @@ void shim_main(uint64_t fdt_addr, uint64_t entry_pc)
 	ramoops_hex(__builtin_bswap32(fdt_magic), 8);
 	ramoops_puts("\n");
 
-	/* 2. Parse FDT /chosen */
+	/* 2. Check for OP2XNU01 payload in ramdisk */
 	uint64_t rd_start = 0, rd_end = 0;
-	if (fdt_chosen_u64(fdt_addr, "linux,initrd-start", &rd_start)) {
+	if (fdt_chosen_u64(fdt_addr, "linux,initrd-start", &rd_start) &&
+	    fdt_chosen_u64(fdt_addr, "linux,initrd-end", &rd_end)) {
 		ramoops_puts("  Initrd Start    : 0x");
 		ramoops_hex(rd_start, 16);
-		ramoops_puts("\n");
-	}
-	if (fdt_chosen_u64(fdt_addr, "linux,initrd-end", &rd_end)) {
-		ramoops_puts("  Initrd End      : 0x");
+		ramoops_puts("\n  Initrd End      : 0x");
 		ramoops_hex(rd_end, 16);
 		ramoops_puts(" (Length: ");
 		ramoops_hex(rd_end - rd_start, 8);
 		ramoops_puts(" bytes)\n");
+
+		const char *magic = (const char *)rd_start;
+		if (magic[0] == 'O' && magic[1] == 'P' && magic[2] == '2' &&
+		    magic[3] == 'X' && magic[4] == 'N' && magic[5] == 'U' &&
+		    magic[6] == '0' && magic[7] == '1') {
+			ramoops_puts("\n[SHIM] Initiating Darwin/XNU payload boot sequence...\n");
+			const char *err = loader_boot(fdt_addr);
+			ramoops_puts("\n[SHIM] loader_boot error: ");
+			ramoops_puts(err);
+			ramoops_puts("\n");
+		} else {
+			ramoops_puts("  Ramdisk payload : (diagnostic/stock ramdisk, no OP2XNU01 header)\n");
+		}
+	} else {
+		ramoops_puts("  No ramdisk present in /chosen.\n");
 	}
 
 	char cmdline[256];
@@ -146,8 +160,8 @@ void shim_main(uint64_t fdt_addr, uint64_t entry_pc)
 	/* 3. Comprehensive FDT Dump (/memory, /reserved-memory, /cpus) */
 	fdt_dump_all(fdt_addr);
 
-	/* 4. Quick 2-second delay before rebooting directly into TWRP */
+	/* 4. Quick delay before safe fast-loop recovery reboot */
 	ramoops_puts("\n[SHIM] Fast-loop rebooting directly into TWRP Recovery...\n");
 	delay_sec(2);
-	reset_soc();
+	reset_to_recovery();
 }

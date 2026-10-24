@@ -1,16 +1,26 @@
 #!/usr/bin/env python3
 """
-Build script for OnePlus 2 (MSM8994) M1 Boot Shim.
-Compiles start.S, links ELF, extracts binary, injects LK DTB offset at 0x2C,
-appends the 7 stock DTBs, and packages out/shim-boot.img with mkbootimg.
+Build script for OnePlus 2 (MSM8994) Boot Shim & Payload Packager.
+Compiles start.S, main.c, console.c, fdt.c, loader.c with clang/lld,
+injects LK DTB offset at 0x2C, appends stock DTBs, and packages out/shim-boot.img.
+
+Usage:
+  python3 shim/build.py [--payload PATH] [--output PATH]
 """
 
+import argparse
 import os
-import subprocess
 import struct
+import subprocess
 import sys
 
+
 def main():
+    parser = argparse.ArgumentParser(description="Build OnePlus 2 Boot Shim")
+    parser.add_argument("--payload", help="Path to XNU payload binary to use as ramdisk")
+    parser.add_argument("--output", default="out/shim-boot.img", help="Output boot.img path")
+    args = parser.parse_args()
+
     repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     shim_dir = os.path.join(repo_root, "shim")
     out_dir = os.path.join(repo_root, "out")
@@ -20,19 +30,22 @@ def main():
     main_c = os.path.join(shim_dir, "main.c")
     console_c = os.path.join(shim_dir, "console.c")
     fdt_c = os.path.join(shim_dir, "fdt.c")
+    loader_c = os.path.join(shim_dir, "loader.c")
 
     start_o = os.path.join(out_dir, "start.o")
     main_o = os.path.join(out_dir, "main.o")
     console_o = os.path.join(out_dir, "console.o")
     fdt_o = os.path.join(out_dir, "fdt.o")
+    loader_o = os.path.join(out_dir, "loader.o")
 
     shim_ld = os.path.join(shim_dir, "shim.ld")
     shim_elf = os.path.join(out_dir, "shim.elf")
     shim_bin = os.path.join(out_dir, "shim.bin")
     dtb_blob = os.path.join(repo_root, "dtb", "control_exp", "dtbs.blob")
     kernel_out = os.path.join(out_dir, "shim_kernel.bin")
-    ramdisk = os.path.join(repo_root, "dtb", "boot_unpacked", "ramdisk")
-    boot_img = os.path.join(out_dir, "shim-boot.img")
+
+    ramdisk = args.payload if args.payload else os.path.join(repo_root, "dtb", "boot_unpacked", "ramdisk")
+    boot_img = os.path.join(repo_root, args.output)
     mkbootimg = os.path.join(repo_root, "tools", "mkbootimg.py")
 
     cflags = [
@@ -46,10 +59,11 @@ def main():
     subprocess.run(["clang", "-target", "aarch64-none-elf"] + cflags + ["-c", main_c, "-o", main_o], check=True)
     subprocess.run(["clang", "-target", "aarch64-none-elf"] + cflags + ["-c", console_c, "-o", console_o], check=True)
     subprocess.run(["clang", "-target", "aarch64-none-elf"] + cflags + ["-c", fdt_c, "-o", fdt_o], check=True)
+    subprocess.run(["clang", "-target", "aarch64-none-elf"] + cflags + ["-c", loader_c, "-o", loader_o], check=True)
 
     print("[2/5] Linking shim.elf with ld.lld...")
     subprocess.run([
-        "ld.lld", "-T", shim_ld, start_o, main_o, console_o, fdt_o, "-o", shim_elf
+        "ld.lld", "-T", shim_ld, start_o, main_o, console_o, fdt_o, loader_o, "-o", shim_elf
     ], check=True)
 
     print("[3/5] Extracting raw binary with llvm-objcopy...")
@@ -87,7 +101,7 @@ def main():
     total_kernel_size = os.path.getsize(kernel_out)
     print(f"      Combined kernel size: {total_kernel_size} bytes ({total_kernel_size // 1024} KB)")
 
-    print("[5/5] Generating boot image with mkbootimg...")
+    print(f"[5/5] Generating boot image with mkbootimg (ramdisk: {os.path.basename(ramdisk)})...")
     cmdline = (
         "androidboot.hardware=qcom user_debug=31 msm_rtb.filter=0x37 "
         "ehci-hcd.park=3 lpm_levels.sleep_disabled=1 boot_cpus=0-3 "
@@ -120,13 +134,13 @@ def main():
         print(f"    Kernel size: {k_sz} bytes, Load address: 0x{k_addr:08x}")
         print(f"    Ramdisk size: {r_sz} bytes, Load address: 0x{r_addr:08x}")
 
-        # Check kernel first block
         k_data = f.read(k_sz)
         app_dtb_off = struct.unpack_from("<I", k_data, 0x2C)[0]
         assert app_dtb_off == shim_len, f"DTB offset in boot.img mismatch: {app_dtb_off} != {shim_len}"
         fdt_magic = k_data[app_dtb_off:app_dtb_off + 4]
         assert fdt_magic == b"\xd0\x0d\xfe\xed", f"FDT magic not found at offset {app_dtb_off}!"
         print(f"    DTB offset at 0x2C: 0x{app_dtb_off:08x} -> FDT magic 0x{fdt_magic.hex()} verified!")
+
 
 if __name__ == "__main__":
     main()

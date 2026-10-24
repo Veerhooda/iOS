@@ -6,6 +6,7 @@ recovery/
 # Reference trees & downloads
 reference/
 research/
+xnu/xnu-*/
 
 # Logs & temp binaries
 logs/
