@@ -117,3 +117,8 @@ Unpacked stock `backup/boot.img` with `tools/unpack_bootimg.py`:
   `androidboot.hardware=qcom user_debug=31 msm_rtb.filter=0x37 ehci-hcd.park=3 lpm_levels.sleep_disabled=1 boot_cpus=0-3 loop.max_part=7 androidboot.selinux=permissive buildvariant=userdebug`
 * **Kernel & DTB**: `dtb/boot_unpacked/kernel` is `Image.gz-dtb` with 7 appended DTBs. DTB 0 corresponds to `Qualcomm Technologies, Inc. MSM8994v2.1 MTP` (287,284 bytes).
 * **Repacked Test Image**: Generated [`out/repack-test.img`](out/repack-test.img). Unpacked and verified: kernel and ramdisk match byte-for-byte.
+* **M0 Key Test (`fastboot boot out/repack-test.img`)**: **PASSED!**
+  * Bootloader loaded image via fastboot (`OKAY [0.269s]`, Booting `OKAY [0.628s]`).
+  * Android 10 booted successfully to the home screen.
+  * Verified via adb: system online (`uptime: up 0 min`).
+  * Confirms header values, base addresses, page size, and kernel entry parameters are 100% accurate for the OnePlus 2 bootloader.
