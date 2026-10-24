@@ -151,6 +151,10 @@ void shim_main(uint64_t fdt_addr, uint64_t entry_pc)
 		if (magic[0] == 'O' && magic[1] == 'P' && magic[2] == '2' &&
 		    magic[3] == 'X' && magic[4] == 'N' && magic[5] == 'U' &&
 		    magic[6] == '0' && magic[7] == '1') {
+			if (!is_qemu) {
+				/* Set restart reason to RECOVERY (0x77665502) in IMEM so any reset reboots to TWRP */
+				*(volatile uint32_t *)0xfe87f65cUL = 0x77665502;
+			}
 			ramoops_puts("\n[SHIM] Initiating Darwin/XNU payload boot sequence...\n");
 			const char *err = loader_boot(fdt_addr);
 			ramoops_puts("\n[SHIM] loader_boot error: ");
