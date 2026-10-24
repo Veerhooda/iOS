@@ -83,6 +83,10 @@ if [[ "$mode" == "find" ]]; then
             echo "${TOOLCHAIN_LIBEXEC}/migcom"
             exit 0
             ;;
+        libtool)
+            echo "/usr/bin/libtool"
+            exit 0
+            ;;
         ctfconvert|ctfmerge|ctf_insert|embedded_device_map)
             # DTrace CTF tools and internal device map not in public Xcode
             exit 1

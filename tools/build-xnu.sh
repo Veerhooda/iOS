@@ -21,6 +21,7 @@ mkdir -p "${BUILD_DIR}/obj" "${BUILD_DIR}/dst"
 echo "[BUILD] Starting serial XNU build (-j1) for DEVELOPMENT_ARM64_MSM8994..."
 make -C "${XNU_SRC}" \
   -j1 \
+  MAKEJOBS="--jobs=1" \
   VERBOSE=YES \
   SRCROOT="${XNU_SRC}" \
   OBJROOT="${BUILD_DIR}/obj" \
