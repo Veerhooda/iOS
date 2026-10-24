@@ -114,7 +114,7 @@ def main():
         "--ramdisk", ramdisk,
         "--pagesize", "4096",
         "--base", "0x00000000",
-        "--kernel_offset", "0x00008000",
+        "--kernel_offset", "0x00080000",
         "--ramdisk_offset", "0x01000000",
         "--tags_offset", "0x00000100",
         "--cmdline", cmdline,

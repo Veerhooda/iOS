@@ -96,6 +96,19 @@ static void delay_sec(uint32_t sec)
 	}
 }
 
+static void watchdog_arm(uint32_t seconds)
+{
+	if (is_qemu) return;
+	volatile uint32_t *wdt = (volatile uint32_t *)0xf9017000UL;
+	uint32_t ticks = seconds * 32765U;
+	wdt[0x10 / 4] = ticks;                  /* WDT0_BARK_TIME */
+	wdt[0x14 / 4] = ticks + (5U * 32765U);  /* WDT0_BITE_TIME (+5s) */
+	wdt[0x08 / 4] = 1;                     /* WDT0_EN */
+	wdt[0x04 / 4] = 1;                     /* WDT0_RST */
+	__asm__ volatile("dmb sy" ::: "memory");
+	ramoops_puts("[SHIM] Hardware Watchdog armed (35s bite timeout at 0xf9017000)\n");
+}
+
 static void reset_to_recovery(void)
 {
 	if (is_qemu) {
@@ -154,6 +167,7 @@ void shim_main(uint64_t fdt_addr, uint64_t entry_pc)
 			if (!is_qemu) {
 				/* Set restart reason to RECOVERY (0x77665502) in IMEM so any reset reboots to TWRP */
 				*(volatile uint32_t *)0xfe87f65cUL = 0x77665502;
+				watchdog_arm(30);
 			}
 			ramoops_puts("\n[SHIM] Initiating Darwin/XNU payload boot sequence...\n");
 			const char *err = loader_boot(fdt_addr);
