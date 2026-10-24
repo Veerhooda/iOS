@@ -141,13 +141,21 @@ const char *loader_boot(uintptr_t fdt_addr)
 	uint64_t pa_of_va_base = p->phys_base - p->virt_base;
 
 	/* Verify no overlap between ramdisk and kernel destination */
-	if (rd_end > p->phys_base && rd_start < (p->phys_base + p->mem_size))
-		return "ramdisk overlaps kernel DRAM";
+	uint64_t kernel_load_end = p->phys_base + (p->kernel_end - p->virt_base) + 0x200000;
+	if (rd_end > p->phys_base && rd_start < kernel_load_end)
+		return "ramdisk overlaps kernel image destination";
 
 	/* 1. Copy segments */
 	for (uint32_t i = 0; i < p->nsegs; i++) {
 		const struct payload_seg *s = &p->segs[i];
 		uintptr_t dst = s->vmaddr + pa_of_va_base;
+		ramoops_puts("  [LOADER] Seg ");
+		ramoops_hex(i, 2);
+		ramoops_puts(": dst=0x");
+		ramoops_hex(dst, 16);
+		ramoops_puts(" sz=0x");
+		ramoops_hex(s->file_size, 8);
+		ramoops_puts("\n");
 		copy64(dst, rd_start + s->file_off, s->file_size);
 		if (s->vmsize > s->file_size) {
 			uint64_t padded_file = (s->file_size + 7) & ~7UL;

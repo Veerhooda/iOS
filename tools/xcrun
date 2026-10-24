@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+#
+# Custom xcrun wrapper for Xcode 10.3 period-correct toolchain on Apple Silicon.
+# Maps SDK and tool lookup requests directly into Xcode 10.3, bypassing broken
+# xcodebuild -find queries on modern macOS.
+#
+
+XCODE_ROOT="/Users/veerhooda/xcode-10.3/Xcode.app/Contents/Developer"
+TOOLCHAIN="${XCODE_ROOT}/Toolchains/XcodeDefault.xctoolchain/usr/bin"
+TOOLCHAIN_LIBEXEC="${XCODE_ROOT}/Toolchains/XcodeDefault.xctoolchain/usr/libexec"
+MACOSX_SDK="${XCODE_ROOT}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.14.sdk"
+IPHONEOS_SDK="${XCODE_ROOT}/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS12.4.sdk"
+MACOSX_PLATFORM="${XCODE_ROOT}/Platforms/MacOSX.platform"
+IPHONEOS_PLATFORM="${XCODE_ROOT}/Platforms/iPhoneOS.platform"
+
+sdk_choice="macosx"
+find_tool=""
+mode=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -sdk|--sdk)
+            sdk_choice="$2"
+            shift 2
+            ;;
+        -show-sdk-path|--show-sdk-path)
+            mode="show-sdk-path"
+            shift
+            ;;
+        -show-sdk-platform-path|--show-sdk-platform-path)
+            mode="show-sdk-platform-path"
+            shift
+            ;;
+        -show-sdk-version|--show-sdk-version)
+            mode="show-sdk-version"
+            shift
+            ;;
+        -find|--find)
+            mode="find"
+            find_tool="$2"
+            shift 2
+            ;;
+        -verbose|--verbose)
+            shift
+            ;;
+        *)
+            # Command execution mode
+            break
+            ;;
+    esac
+done
+
+if [[ "$mode" == "show-sdk-path" ]]; then
+    if [[ "$sdk_choice" =~ [iI]phone ]]; then
+        echo "$IPHONEOS_SDK"
+    else
+        echo "$MACOSX_SDK"
+    fi
+    exit 0
+fi
+
+if [[ "$mode" == "show-sdk-platform-path" ]]; then
+    if [[ "$sdk_choice" =~ [iI]phone ]]; then
+        echo "$IPHONEOS_PLATFORM"
+    else
+        echo "$MACOSX_PLATFORM"
+    fi
+    exit 0
+fi
+
+if [[ "$mode" == "show-sdk-version" ]]; then
+    if [[ "$sdk_choice" =~ [iI]phone ]]; then
+        echo "12.4"
+    else
+        echo "10.14"
+    fi
+    exit 0
+fi
+
+if [[ "$mode" == "find" ]]; then
+    case "$find_tool" in
+        migcom)
+            echo "${TOOLCHAIN_LIBEXEC}/migcom"
+            exit 0
+            ;;
+        ctfconvert|ctfmerge|ctf_insert|embedded_device_map)
+            # DTrace CTF tools and internal device map not in public Xcode
+            exit 1
+            ;;
+        *)
+            if [[ -x "${TOOLCHAIN}/${find_tool}" ]]; then
+                echo "${TOOLCHAIN}/${find_tool}"
+                exit 0
+            elif [[ -x "/usr/bin/${find_tool}" ]]; then
+                echo "/usr/bin/${find_tool}"
+                exit 0
+            fi
+            exit 1
+            ;;
+    esac
+fi
+
+# Execute command under Rosetta 2 if it's an x86_64 tool
+if [[ $# -gt 0 ]]; then
+    cmd="$1"
+    shift
+    if [[ -x "${TOOLCHAIN}/${cmd}" ]]; then
+        exec arch -x86_64 "${TOOLCHAIN}/${cmd}" "$@"
+    elif [[ -x "/usr/bin/${cmd}" ]]; then
+        exec "/usr/bin/${cmd}" "$@"
+    else
+        exec "$cmd" "$@"
+    fi
+fi
+
+exit 0

@@ -33,8 +33,11 @@ struct persistent_ram_buffer {
 	char data[];
 };
 
+static int is_qemu = 0;
+
 static void ramoops_init(void)
 {
+	if (is_qemu) return;
 	volatile struct persistent_ram_buffer *buf = (volatile void *)RAMOOPS_CONSOLE;
 	buf->sig = RAMOOPS_SIG;
 	buf->start = 0;
@@ -43,6 +46,10 @@ static void ramoops_init(void)
 
 void ramoops_putc(char c)
 {
+	if (is_qemu) {
+		*(volatile uint32_t *)0x09000000UL = (uint32_t)(unsigned char)c;
+		return;
+	}
 	volatile struct persistent_ram_buffer *buf = (volatile void *)RAMOOPS_CONSOLE;
 	uint32_t sz = buf->size;
 	if (sz < 260000) {
@@ -81,6 +88,7 @@ static inline uint64_t get_cntvct(void)
 
 static void delay_sec(uint32_t sec)
 {
+	if (is_qemu) return;
 	uint64_t start = get_cntvct();
 	uint64_t ticks = (uint64_t)sec * 19200000ULL;
 	while (get_cntvct() - start < ticks) {
@@ -90,6 +98,10 @@ static void delay_sec(uint32_t sec)
 
 static void reset_to_recovery(void)
 {
+	if (is_qemu) {
+		ramoops_puts("\n[SHIM] QEMU execution halted.\n");
+		for (;;) __asm__ volatile("wfi");
+	}
 	ramoops_puts("\n[SHIM] Setting restart_reason to RECOVERY (0x77665502)...\n");
 	/* Write recovery reboot cookie to IMEM restart_reason (0xfe87f65c) */
 	*(volatile uint32_t *)0xfe87f65cUL = 0x77665502;
@@ -102,6 +114,7 @@ static void reset_to_recovery(void)
 
 void shim_main(uint64_t fdt_addr, uint64_t entry_pc)
 {
+	is_qemu = (entry_pc >= 0x40000000UL);
 	/* 1. Initialize Ramoops console */
 	ramoops_init();
 	ramoops_puts("\n=======================================================\n");

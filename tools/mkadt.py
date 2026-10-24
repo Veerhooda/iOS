@@ -78,7 +78,10 @@ def node(name, props=(), children=()):
 
 
 def build(seed=None, qemu=False):
-    phys_base, mem_size = PHYS_BASE, MEM_SIZE
+    if qemu:
+        phys_base, mem_size = 0x40000000, 0x40000000  # 1 GiB DRAM in QEMU virt
+    else:
+        phys_base, mem_size = PHYS_BASE, MEM_SIZE
     panic_base = phys_base + mem_size - PANIC_LOG_SIZE
     mem_size -= PANIC_LOG_SIZE
 
@@ -165,7 +168,15 @@ def build(seed=None, qemu=False):
         ])
     ]
 
-    if not qemu:
+    if qemu:
+        arm_io_children.append(
+            node('uart0', [
+                ph(),
+                ('compatible', cstr('arm,pl011')),
+                ('reg', u64(0x08000000, 0x1000)),
+            ])
+        )
+    else:
         arm_io_children.append(
             node('sdhci', [
                 ph(),

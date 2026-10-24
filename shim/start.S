@@ -190,9 +190,55 @@ _start:
 	mov	x19, x0
 	adr	x21, _head
 
-	/* 3. Setup safe stack at 0x00400000 */
+	/* If under QEMU (0x40000000 <= PC < 0x50000000), relocate to 0x50000000
+	 * to prevent being overwritten when kernel segments are copied to 0x40004000..0x40A50000
+	 */
+	mov	x2, #0x40000000
+	cmp	x21, x2
+	b.lo	.Lno_relocate
+	mov	x3, #0x50000000
+	cmp	x21, x3
+	b.hs	.Lno_relocate
+
+	/* Copy entire shim to 0x50000000 */
+	mov	x4, x3			/* dst = 0x50000000 */
+	mov	x5, x21			/* src = entry PC */
+	adr	x6, _shim_end
+	sub	x6, x6, x21
+	add	x6, x6, #15
+	bic	x6, x6, #15
+1:	ldp	x7, x8, [x5], #16
+	stp	x7, x8, [x4], #16
+	subs	x6, x6, #16
+	b.ne	1b
+
+	/* Invalidate icache so newly copied instructions run cleanly */
+	dsb	sy
+	ic	iallu
+	dsb	sy
+	isb
+
+	/* Jump to .Lrelocated at 0x50000000 */
+	adr	x7, .Lrelocated
+	sub	x7, x7, x21
+	add	x7, x7, x3
+	br	x7
+
+.Lrelocated:
+	mov	x21, x3			/* actual Entry PC is now 0x50000000 */
+
+.Lno_relocate:
+	/* 3. Setup safe stack */
+	mov	x2, #0x40000000
+	cmp	x21, x2
+	b.hs	.Lstack_qemu
 	mov	x1, #0x00400000
 	mov	sp, x1
+	b	.Lstack_done
+.Lstack_qemu:
+	add	x1, x21, #0x00380000
+	mov	sp, x1
+.Lstack_done:
 
 	/* 4. Set Exception Vector Base Address */
 	adr	x1, vectors
@@ -216,6 +262,9 @@ _start:
 	b	do_reset
 
 do_reset:
+	mov	x2, #0x40000000
+	cmp	x21, x2
+	b.hs	reset_spin
 	/* Write 0 to PS_HOLD (0xfc4ab000) */
 	mov	x1, #0xb000
 	movk	x1, #0xfc4a, lsl #16		/* 0xfc4ab000 */
