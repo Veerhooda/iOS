@@ -1,0 +1,109 @@
+
+=======================================================
+  [ONEPLUS2-SHIM] M2 Bootloader & XNU Stage Active
+=======================================================
+  Actual Entry PC : 0x0000000000080000
+  CurrentEL       : EL1
+  FDT Pointer (x0): 0x0000000001E00000
+  FDT Header Magic: 0xD00DFEED
+  Initrd Start    : 0x0000000002000000
+  Initrd End      : 0x00000000029B8970 (Length: 009B8970 bytes)
+
+[SHIM] Initiating Darwin/XNU payload boot sequence...
+[LOADER] Found ramdisk at 0x0000000002000000 .. 0x00000000029B8970 (009B8970 bytes)
+[LOADER] Valid OP2XNU01 payload detected!
+  PhysBase   : 0x0000000010200000
+  MemSize    : 0x000000009BD00000
+  VirtBase   : 0xFFFFFFF007000000
+  EntryVA    : 0xFFFFFFF0070F0098
+  Segments   : 08
+  [LOADER] Seg 00: dst=0x0000000010204000 sz=0x000C0000
+  [LOADER] Seg 01: dst=0x00000000102C4000 sz=0x00028000
+  [LOADER] Seg 02: dst=0x00000000102EC000 sz=0x006D4000
+  [LOADER] Seg 03: dst=0x00000000109C0000 sz=0x00004000
+  [LOADER] Seg 04: dst=0x00000000109C4000 sz=0x00004000
+  [LOADER] Seg 05: dst=0x00000000109C8000 sz=0x0004C000
+  [LOADER] Seg 06: dst=0x0000000010AA4000 sz=0x00018000
+  [LOADER] Seg 07: dst=0x0000000010ABC000 sz=0x0018ED78
+[LOADER] Segments relocated successfully.
+[LOADER] ADT placed at PA 0x0000000010C4B000 (001998 bytes)
+[LOADER] boot_args placed at PA 0x0000000010C4D000, topOfKernelData = 0x0000000010C4E000
+  Cmdline: -v debug=0x10014e serial=3 cpus=1 keepsyms=1 -use_hwpagesize
+[LOADER] Kernel Entry Point PA: 0x00000000102F0098
+[LOADER] Flushing CPU caches and transferring control to Darwin/XNU...
+
+kprintf initialized
+Serial mode specified: 00000003
+iBoot didn't extract panic log from previous session crash, this is bad
+initialize_screen: b=00000000, w=00000000, h=00000000, r=00000000, d=00000000
+initialize_screen: No video - forcing serial mode
+pe_arm_init_interrupts: args: 0xfffffff00784e020
+pe_arm_map_interrupt_controller: soc_phys:  0x1000000
+pe_arm_map_interrupt_controller: failed to find the interrupt-controller.
+pe_arm_init_debug: failed to find cpu-debug-interface
+Darwin Kernel Version 18.7.0: Sun Oct 25 02:45:30 IST 2026; veerhooda:xnu-4903.270.47/BUILD/obj/DEVELOPMENT_ARM64_MSM8994
+pmap_startup() init/release time: 33205 microsec
+pmap_startup() delayed init/release of 0 pages
+vm_page_bootstrap: 152445 free pages, 1347 wired pages, (up to 0 of which are delayed free)
+zone leak detection disabled
+zalloc: allocating memory for zone names buffer
+"vm_compressor_mode" is 8
+oslog_init completed, 16 chunks, 8 io pages
+Telemetry: Sampling all tasks once per 1 second
+Scheduler: Default of dualq
+Setting scheduler priority decay band limit 18
+standard timeslicing quantum is 10000 us
+standard background quantum is 2500 us
+WQ[wql_init]: init linktable with max:262144 elements (8388608 bytes)
+WQ[wqp_init]: init prepost table with max:262144 elements (8388608 bytes)
+mig_table_max_displ = 51
+ATM subsystem is initialized
+BANK subsystem is initialized
+IPC_PTHREAD_PRIORITY subsystem is initialized
+kdp_core zlib memory 0x8000
+Registered coredump handler for kernel
+Serial requested, consistent debug disabled or debug boot arg not present, configuring debugging over serial
+Initializing serial KDP
+iBoot version: oneplus2-shim
+panic(cpu 0 caller 0xfffffff007757150): "Unable to find driver for this platform: \"N56AP\".\n"
+Debugger message: panic
+Device: N56
+Hardware Model: iPhone7,1
+ECID: 4F50320000000001
+Boot args: -v debug=0x10014e serial=3 cpus=1 keepsyms=1 -use_hwpagesize
+Memory ID: 0x0
+OS version: Not set yet
+Kernel version: Darwin Kernel Version 18.7.0: Sun Oct 25 02:45:30 IST 2026; veerhooda:xnu-4903.270.47/BUILD/obj/DEVELOPMENT_ARM64_MSM8994
+Kernel UUID: B713A9D0-23C2-3C4B-BE2E-A9C27EF17DC5
+iBoot version: oneplus2-shim
+secure boot?: NO
+Paniclog version: 13
+mach_absolute_time: 0xf153f8b
+Epoch Time:        sec       usec
+  Boot    : 0x00000000 0x00000000
+  Sleep   : 0x00000000 0x00000000
+  Wake    : 0x00000000 0x00000000
+  Calendar: 0x00000000 0x00000000
+
+Panicked task 0xfffffff0ac1c5c48: 649 pages, 13 threads: NULL bsd_info pointer
+unknown task
+Panicked thread: 0xfffffff0ac1f9118, backtrace: 0xfffffff00321b480, tid: 113
+		  lr: 0xfffffff0071389f8  fp: 0xfffffff00321b4f0
+		  lr: 0xfffffff007138858  fp: 0xfffffff00321b560
+		  lr: 0xfffffff0072a4984  fp: 0xfffffff00321b590
+		  lr: 0xfffffff007299e98  fp: 0xfffffff00321b640
+		  lr: 0xfffffff0070ef5e4  fp: 0xfffffff00321b650
+		  lr: 0xfffffff007137f38  fp: 0xfffffff00321b9f0
+		  lr: 0xfffffff0071383c4  fp: 0xfffffff00321ba50
+		  lr: 0xfffffff007138164  fp: 0xfffffff00321ba70
+		  lr: 0xfffffff007757150  fp: 0xfffffff00321ba90
+		  lr: 0xfffffff007712b08  fp: 0xfffffff00321bae0
+		  lr: 0xfffffff0077127fc  fp: 0xfffffff00321bb90
+		  lr: 0xfffffff007711c30  fp: 0xfffffff00321bc00
+		  lr: 0xfffffff007713d18  fp: 0xfffffff00321bc90
+		  lr: 0xfffffff0070f23f4  fp: 0x0000000000000000
+
+
+** Stackshot Succeeded ** Bytes Traced 5072 **
+Attempting system restart...Resetting via MSM8994 PS_HOLD to Recovery...
+

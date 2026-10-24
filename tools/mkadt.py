@@ -183,8 +183,6 @@ def build(seed=None, qemu=False):
                 ('compatible', cstr('qcom,sdhci-msm')),
                 ('reg', u64(SDHCI - SOC_BASE, SDHCI_SIZE,
                             SDHCI_CORE - SOC_BASE, SDHCI_CORE_SIZE)),
-                ('interrupt-parent', u32(1)),
-                ('interrupts', u32(155)),
             ])
         )
 
