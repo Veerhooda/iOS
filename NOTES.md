@@ -215,3 +215,49 @@ Checked on live device:
 * `[ 0.000000] OEM: Found ramoops_mem, memory base 0x00000000ac000000, size 1 MiB`
 * `[ 0.235146] ramoops: attached 0x100000@0xac000000, ecc: 0/0`
 * Sysfs `/sys/fs/pstore`: `console-ramoops-0` (262 KB) and `pmsg-ramoops-0` (4 KB) exist and survive warm reboots!
+
+---
+
+## M1 Bare-Metal Boot Shim Verification (Day 2)
+
+### 1. Implementation
+* **Entry & Vectors**: `shim/start.S` implements ARM64 Image header with Little Kernel DTB offset dynamically injected into byte `0x2C`. Complete 16-slot exception vector table aligned to `0x800` catching synchronous aborts, IRQ, FIQ, and SError.
+* **Stack**: Dedicated safe stack pointer initialized to `sp = 0x00400000` (growing downward towards `0x00300000`), completely isolated from kernel, DTB, ramdisk, and splash memory.
+* **Persistent Ramoops Console**: Buffer initialized at physical address `0xac0be000` with signature `0x43474244` (`DBGC`).
+* **Display Test**: Dual-format color stripe pattern painted directly to continuous splash memory at `0x03401000`:
+  * Top half (lines 0..959): 32 bpp, stride 4352 bytes (Red, Green, Blue bands).
+  * Bottom half (lines 960..1919): 24 bpp, stride 3240 bytes (Yellow, Cyan, Magenta bands).
+* **Reset**: Deasserts PS_HOLD by writing `0` to `0xfc4ab000` after a 5-second `cntvct_el0` delay loop.
+* **Toolchain & Build**: Automated build script [`shim/build.py`](shim/build.py) / [`shim/build.sh`](shim/build.sh) using `clang -target aarch64-none-elf` and `ld.lld`.
+
+### 2. Live Boot Test & Execution Evidence
+Executed `fastboot boot out/shim-boot.img`:
+```text
+Sending 'boot.img' (2560 KB)                       OKAY [  0.077s]
+Booting                                            OKAY [  0.178s]
+Finished. Total time: 0.255s
+```
+
+After device warm-reset and boot into Android, retrieved `/sys/fs/pstore/console-ramoops-0`:
+```text
+=======================================================
+  [ONEPLUS2-SHIM] M1 Bare-Metal Shim Executed Successfully!
+=======================================================
+  Execution Level : EL01
+  FDT Pointer (x0): 0x0000000001E00000
+  FDT Magic       : 0xD00DFEED
+
+  Painting Framebuffer stripes (32bpp top, 24bpp bottom)... DONE
+  Holding display for 5 seconds...
+  Triggering PMIC reset via PS_HOLD (0xfc4ab000)...
+=======================================================
+```
+
+### 3. Key Facts Confirmed
+1. **Bare-metal execution verified**: Little Kernel transfers control cleanly to our uncompressed shim.
+2. **Execution Level**: The CPU executes at **EL1** (`CurrentEL = 0x4` $\rightarrow$ EL1).
+3. **Little Kernel DTB passing location**: LK places the patched FDT at **`0x01E00000`** (30 MiB mark in RAM).
+4. **FDT validity**: Magic bytes at `0x01E00000` verified as `0xd00dfeed`.
+5. **Ramoops channel operational**: The 256 KB console buffer at `0xac0be000` survives warm PMIC resets and dumps cleanly into Linux userspace.
+6. **PS_HOLD software reset**: Writing 0 to `0xfc4ab000` triggers immediate SoC reset.
+
