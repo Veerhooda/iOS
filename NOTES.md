@@ -376,5 +376,27 @@ Modeled after Apple's clean `BCM2837` (Raspberry Pi 3) implementation, avoiding 
   - Built full `out/xnu-boot.img` (28.6 MB).
   - Validated ELF linkage, DTB appending, and mkbootimg packaging.
 
+---
+
+## Milestone 6 Complete: Full Real Apple iOS 12.5.7 Userland Bring-Up & Multi-Process Daemon Launch
+- **Hardware Target**: Physical OnePlus 2 (`ONE A2003`, MSM8994 / Snapdragon 810 v2.1, 64 GB eMMC).
+- **Kernel**: XNU 4903.270.47 (ARM64, native 4 KB granule, `cpus=1`).
+- **Root Filesystem**: Real iOS 12.5.7 (`16H81`) case-sensitive HFS+ mounted from physical flash (`userdata` / `mmcblk0p43`).
+- **Core Results & Breakthroughs**:
+  1. `/sbin/launchd` executes at EL0, evaluates AMFI, Sandbox, and Quarantine MAC policies.
+  2. Platform binary status, code signing flags (`CS_PLATFORM_BINARY`), and code directory identities cleanly resolved across `execve` and `posix_spawn`.
+  3. All boot-tasks passed without errors:
+     - `/sbin/fsck` -> `/sbin/fsck_hfs` on `/dev/rdisk0s1` (PASSED)
+     - `init_data_protection` / `seputil` (PASSED, returns 0)
+     - `mobile_obliterator` (PASSED, returns 0)
+     - `/sbin/fsck` -> `/sbin/fsck_hfs` on `/dev/rdisk0s2` (PASSED)
+     - `HorizonSetup` (PASSED)
+     - `cc_fips_test` (PASSED, all 16 corecrypto self-tests passed in 224 ms natively)
+     - `/sbin/mount` -> `/sbin/mount_hfs` (PASSED, VFS bypassed redundant rootdev mount on covered `/private/var`)
+  4. Implemented built-in `AppleKeyStore` (`OP2KeyStore.cpp`) and `IOWatchdog` (`OP2Watchdog.cpp`) IOKit services published on `IOResources`.
+  5. Security daemon `keybagd` (`/usr/libexec/keybagd`) connected to `AppleKeyStore`, queried selector 14 (`aks_get_system`), received handle 0, queried lock state (0x4, unlocked), and initialized MobileKeyBag (`MKB_INIT`) successfully.
+  6. Launchd launched early daemons (`xpcroleaccountd`, `fud`, `tzinit`, `FinishRestoreFromBackup`, `sysstatuscheck`) and transitioned to full LaunchDaemons bootstrap, spawning over 42 concurrent processes (including `xpcproxy` trampolines for `mDNSResponder`, `cfprefsd`, etc.).
+  7. System executed concurrently with 40+ kernel threads for the full 50-second test window with zero kernel panics or crashes, resetting cleanly to TWRP recovery via autonomous timer deadline (`op2_deadline=50`).
+
 
 
