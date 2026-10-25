@@ -56,7 +56,7 @@ Each entry describes:
 - **Risks & Userland Impact:**  
   The PRNG has **no physical entropy source**. It is seeded solely by the CPU virtual timer tick (`ml_get_timebase()`) and a static string (`"xnu msm8994 kernel random"`). ASLR base addresses, UUIDs, stack canaries, and `/dev/urandom` in userland are predictable across reboots.
 - **Condition for Removal:**  
-  Implement an entropy feeder using Qualcomm's hardware Crypto Engine (`0xfd440000` / `0xfd3c0000` in device tree `qcrypto`) or read random seeds passed from LK bootloader in the device tree `/chosen/rng-seed`.
+  Implement an entropy feeder using Qualcomm's hardware Random Number Generator (`0xf9bff000`, `qcom,msm-rng` in the OnePlus 2 device tree) or read random seeds passed from LK bootloader in the device tree `/chosen/rng-seed`.
 
 ---
 
@@ -88,16 +88,17 @@ Each entry describes:
 
 ---
 
-## 6. Root Wait Panic Hook (`Milestone 3 SUCCESS`)
+## 6. Root Wait Panic Hook (`Milestone 3 SUCCESS -> Milestone 4 Root Mount`)
 
 - **Files:**  
   `iokit/bsddev/IOKitBSDInit.cpp`
 - **Why it was necessary:**  
-  When booting without a ramdisk or root media, `IOFindBSDRoot()` loops indefinitely: `do { waitForService(); } while (!service);`. On hardware with watchdog disabled, this causes the phone to park at the boot logo indefinitely, requiring battery pulls. An explicit panic was inserted right after `Waiting on <dict ...>` to flush logs and trigger `PS_HOLD = 0` warm reset back to TWRP.
+  When booting without a ramdisk or root media, `IOFindBSDRoot()` loops indefinitely: `do { waitForService(); } while (!service);`. On hardware with watchdog disabled, this causes the phone to park at the boot logo indefinitely, requiring battery pulls. In Milestone 3, an explicit panic was inserted right after `Waiting on <dict ...>` to flush logs and trigger `PS_HOLD = 0` warm reset back to TWRP.
+  In Milestone 4, this was updated to let `IOFindBSDRoot()` proceed with RAM-disk device matching (`rd=md0`), panicking only if the RAM-disk fails to match (`panic("IOFindBSDRoot: no root device matched (ramdisk missing or failed)")`).
 - **Risks & Userland Impact:**  
-  The kernel will deliberately panic instead of waiting if no root device matches immediately.
+  The kernel will deliberately panic instead of waiting indefinitely if no root device matches immediately.
 - **Condition for Removal:**  
-  In Milestone 4, remove the panic hook when providing a valid `RAMDisk` in the ADT `/chosen/memory-map` with `rd=md0` so `IOFindBSDRoot()` finds the memory disk and mounts the root filesystem.
+  Once secondary storage drivers (e.g. UFS / eMMC) are ready and asynchronously probed, restore the normal `waitForService` loop.
 
 ---
 
@@ -111,3 +112,36 @@ Each entry describes:
   If the kernel hangs in a tight spinlock or fault before panic handling, the phone will stay powered on and warm without automatically rebooting.
 - **Condition for Removal:**  
   Investigate IMEM download-mode cookies (`msm_poweroff.c`) and confirm whether clearing them or configuring TrustZone SCM calls allows watchdog expiration to trigger a clean warm reboot. Until proven with an autonomous reboot into TWRP, the watchdog remains disabled in EL1, and all test images must be bounded by deliberate software panic/reset hooks.
+
+---
+
+## 8. Gated PID 1 Syscall Breadcrumbs
+
+- **Files:**  
+  `osfmk/arm64/sleh.c`
+- **Why it was necessary:**  
+  During Milestone 4 bring-up, provides immediate kernel-side breadcrumbs (`PID 1 syscall: %lld`) as PID 1 invokes syscalls, ensuring unmistakable log evidence of userland execution even if the console `/dev/console` write blocks or buffers in the tty layer.
+- **Risks & Userland Impact:**  
+  Gated behind the boot-argument `trace_syscalls=1`. When the boot-arg is absent (default), it evaluates `false` once and executes zero prints on the syscall fast path.
+- **Condition for Removal:**  
+  Remove once userland console I/O and process lifecycle are established and reliable.
+
+---
+
+## 9. Built-in Apple HFS+ Driver & macOS 10.14 Compatibility Wrappers
+
+- **Files:**  
+  `bsd/op2_hfs/` (core/ and hfs_encodings/)  
+  `bsd/op2_hfs/op2_hfs_compat.h`  
+  `bsd/op2_hfs/op2_hfs_iokit.c`  
+  `bsd/conf/files`  
+  `bsd/conf/Makefile.template`  
+  `bsd/kern/bsd_init.c`  
+  `config/MASTER`  
+  `config/MASTER.arm64.msm8994`
+- **Why it was necessary:**  
+  `xnu-4903` lacks the in-kernel HFS filesystem driver (Apple removed it from the open-source tree in macOS 10.14 and distributed it as a closed-source kext, before open-sourcing the modern implementation in `hfs-627.100.6` under macOS 13). We staged Apple's open-source `hfs-627.100.6` directly into `bsd/op2_hfs/` and linked it built-in. Compatibility shims in `op2_hfs_compat.h` and `op2_hfs_iokit.c` bridge macOS 13 APIs (`IOMallocType`, `IOMallocZero`, `zone_create` -> `zinit`, `struct fsioc_cas_bsdflags`, `vn_getpath_ext` -> `vn_getpath`, `ubc_create_upl` -> `ubc_create_upl_external`, `hashdestroy` -> `FREE`) back to `xnu-4903` (macOS 10.14) KPIs.
+- **Risks & Userland Impact:**  
+  Content protection (AppleKeyStore) and searchfs are compiled out. Filesystem metadata operates entirely in unencrypted HFS+ mode.
+- **Condition for Removal:**  
+  Permanent driver for HFS+ root filesystem until APFS support or alternative storage filesystem is brought up.
