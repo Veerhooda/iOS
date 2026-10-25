@@ -26,7 +26,7 @@ Both deliverables have been **fully achieved**. The physical OnePlus 2 executed 
 | **Page Size Granule** | 4 KB (`page_shift=12`) | 4 KB (`page_shift=12`) | **MATCH** | Native 4 KB page table structures on ARMv8.0-A |
 | **Managed Memory** | 1,023 MiB (255,188 free / 6,700 wired) | 2,403 MiB (602,199 free / 12,969 wired) | **MATCH** | Scales correctly to MSM8994 2.4 GB DRAM bank |
 | **CommPage Population** | Completed successfully | Completed successfully | **MATCH** | Shared user/kernel commpage populated |
-| **IOKit Platform Expert** | `SweetPlatformExpert` registered | `SweetPlatformExpert` registered | **MATCH** | Built-in `IODTPlatformExpert` matches `N56AP` / `msm8994` |
+| **IOKit Platform Expert** | `OP2PlatformExpert` registered | `OP2PlatformExpert` registered | **MATCH** | Built-in `IODTPlatformExpert` matches `N56AP` / `msm8994` |
 | **In-Kernel libpthread** | `libpthread-330.250.2` registered | `libpthread-330.250.2` registered | **MATCH** | Open-source pthread syscalls registered in kernel |
 | **Corecrypto Protection** | Null guards prevent null deref | Null guards prevent null deref | **MATCH** | Early TCP TFO / AES calls guarded against null |
 | **DLIL Self-Tests** | SUM16 PASSED | SUM16 PASSED | **MATCH** | Network data link interface layer operational |
@@ -275,7 +275,7 @@ Attempting system restart...Resetting via MSM8994 PS_HOLD to Recovery...
 
 ## 4. Key Engineering Resolutions
 
-1. **IOKit Platform Matching (`SweetPlatformExpert`):**
+1. **IOKit Platform Matching (`OP2PlatformExpert`):**
    - Implemented a built-in `IODTPlatformExpert` personality matching `N56AP` and `msm8994` at score 10,000 in `KernelConfigTables.cpp`.
    - Enabled registration of platform device tree roots and CPU logical nubs.
 2. **In-Kernel libpthread Registration (`bsd/pthread/op2_libpthread`):**
