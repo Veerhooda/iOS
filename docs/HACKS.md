@@ -140,8 +140,37 @@ Each entry describes:
   `config/MASTER`  
   `config/MASTER.arm64.msm8994`
 - **Why it was necessary:**  
-  `xnu-4903` lacks the in-kernel HFS filesystem driver (Apple removed it from the open-source tree in macOS 10.14 and distributed it as a closed-source kext, before open-sourcing the modern implementation in `hfs-627.100.6` under macOS 13). We staged Apple's open-source `hfs-627.100.6` directly into `bsd/op2_hfs/` and linked it built-in. Compatibility shims in `op2_hfs_compat.h` and `op2_hfs_iokit.c` bridge macOS 13 APIs (`IOMallocType`, `IOMallocZero`, `zone_create` -> `zinit`, `struct fsioc_cas_bsdflags`, `vn_getpath_ext` -> `vn_getpath`, `ubc_create_upl` -> `ubc_create_upl_external`, `hashdestroy` -> `FREE`) back to `xnu-4903` (macOS 10.14) KPIs.
+  `xnu-4903` lacks the in-kernel HFS filesystem driver (Apple removed it from the open-source tree in macOS 10.14 and distributed it as a closed-source kext). While the original plan considered `hfs-407.200.4`, inspecting Apple's open-source release confirmed that `hfs-407` contained only userland utilities (`newfs_hfs`, `fsck_hfs`) and omitted the in-kernel driver entirely. The kernel driver was first published in `hfs-627.100.6` (macOS 13.5, commit `31d5ec238dfab485e78a9a30b8b92d13e8914f03`).
+  We staged Apple's open-source `hfs-627.100.6` directly into `bsd/op2_hfs/` and linked it built-in. Compatibility shims in `op2_hfs_compat.h` and `op2_hfs_iokit.c` bridge macOS 13 APIs (`IOMallocType`, `IOMallocZero`, `zone_create` -> `zinit`, `struct fsioc_cas_bsdflags`, `vn_getpath_ext` -> `vn_getpath`, `ubc_create_upl` -> `ubc_create_upl_external`, `hashdestroy` -> `FREE`) back to `xnu-4903` (macOS 10.14) KPIs.
 - **Risks & Userland Impact:**  
+  `hfs-627.100.6` is substantially newer (macOS 13, 2022) than `xnu-4903` (macOS 10.14, 2018). While sufficient for an unpartitioned 4 MB static RAM-disk boot, newer assumptions around buffer caching, clustering, and journal transaction lifecycles may interact unexpectedly with older XNU VFS subsystems.
   Content protection (AppleKeyStore) and searchfs are compiled out. Filesystem metadata operates entirely in unencrypted HFS+ mode.
-- **Condition for Removal:**  
+- **Condition for Removal / M5 Requirement:**  
+  Retain for HFS+ root filesystem support until APFS or another filesystem driver is operational.
+  **Critical M5 Rule:** Before mounting a real, writable, journaled root partition from persistent storage (e.g. UFS / eMMC), mount it read-only first (`rd=... -s`) and closely verify journal replay, block allocation, and buffer-cache synchronization.
   Permanent driver for HFS+ root filesystem until APFS support or alternative storage filesystem is brought up.
+
+---
+
+## 10. GICv2 Interrupt Controller & ARM Generic Timer Integration (Milestone 4b)
+
+- **Files:**  
+  `iokit/Kernel/arm/OP2InterruptController.h`  
+  `iokit/Kernel/arm/OP2InterruptController.cpp`  
+  `iokit/Kernel/arm/OP2PlatformExpert.cpp`  
+  `pexpert/pexpert/arm64/MSM8994.h`  
+  `pexpert/arm/pe_identify_machine.c`  
+  `osfmk/arm64/sleh.c`  
+  `bsd/op2_hfs/op2_hfs_compat.h`
+- **Why it was necessary:**  
+  XNU's Mach scheduler and timekeeping subsystems require periodic clock interrupts (`rtclock_intr`). Standard Apple platforms use proprietary timer hardware arriving as FIQs. On the Snapdragon 810 (MSM8994), hardware interrupts are routed through an ARM GICv2 (`arm,gic-400`), and timekeeping uses the ARM Generic Virtual Timer (`CNTV_CTL_EL0`, `CNTV_TVAL_EL0`).  
+  1. **Dynamic Addressing:** GIC distributor PA (`0xf9000000` on hardware, `0x08000000` on QEMU) and CPU interface PA (`0xf9002000` on hardware, `0x08010000` on QEMU), along with the virtual timer PPI (`INTID 20` on hardware, `INTID 27` on QEMU), are parsed dynamically from the device tree node `/arm-io/gic`.  
+  2. **IOKit Registration Order:** `OP2InterruptController` (`IOInterruptController` subclass) is instantiated and registered in `OP2PlatformExpert::start()` *after* `IODTPlatformExpert::start(provider)` completes, ensuring `getPlatform()`, `gIOInterruptControllers`, and `gPlatformInterruptControllerName` are fully initialized.  
+  3. **Timer Dispatch in `sleh_irq`:** Acknowledges interrupts via `GICC_IAR` (with `GICC_AIAR` alias fallback for Group 0 Non-secure access). When `intid == op2_vtimer_intid`, it invokes `rtclock_intr(TRUE)`, re-arms `CNTV_TVAL_EL0` if not already armed, and deactivates via `GICC_EOIR` / `GICC_AEOIR`.  
+  4. **LP64 Property Parsing Fix:** Fixed `pe_identify_machine.c` where 32-bit (`size == 4`) device tree frequency properties were dereferenced through `unsigned long *` (64-bit on LP64), corrupting `timebase_frequency_hz` with adjacent memory bytes and ballooning the 10 ms interval to 18.5 seconds.  
+  5. **HFS 64-bit Pointer Truncation Fix:** Added explicit `void *IOMallocZero(vm_size_t size);` prototype to `op2_hfs_compat.h`. Previously, lack of prototype led clang to infer `int IOMallocZero()`, generating `sxtw x20, w0` that truncated 64-bit heap addresses into unmapped 32-bit pointers (`0x00000000562ba810`), causing kernel data aborts.
+- **Risks & Userland Impact:**  
+  Timer interrupts execute every 10 ms on CPU 0. Secondary CPUs are currently disabled (`cpus=1`), so per-CPU timer banking for secondary cores is not yet active.
+- **Condition for Removal:**  
+  Permanent architectural driver for MSM8994 GICv2 and ARM Generic Virtual Timer. Secondary CPU timer initialization will be added in Milestone 6 (SMP).
+
