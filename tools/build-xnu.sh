@@ -32,6 +32,7 @@ make -C "${XNU_SRC}" \
   MACHINE_CONFIGS=MSM8994 \
   ARCH_STRING_FOR_CURRENT_MACHINE_CONFIG=arm64 \
   XCRUN="${REPO_ROOT}/tools/xcrun" \
+  BUILD_LTO=0 \
   DO_CTFCONVERT=0 \
   DO_CTFMERGE=0 \
   "$@" 2>&1 | tee "${REPO_ROOT}/build.log"
