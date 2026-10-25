@@ -31,12 +31,14 @@ def main():
     console_c = os.path.join(shim_dir, "console.c")
     fdt_c = os.path.join(shim_dir, "fdt.c")
     loader_c = os.path.join(shim_dir, "loader.c")
+    sdhci_c = os.path.join(shim_dir, "sdhci.c")
 
     start_o = os.path.join(out_dir, "start.o")
     main_o = os.path.join(out_dir, "main.o")
     console_o = os.path.join(out_dir, "console.o")
     fdt_o = os.path.join(out_dir, "fdt.o")
     loader_o = os.path.join(out_dir, "loader.o")
+    sdhci_o = os.path.join(out_dir, "sdhci.o")
 
     shim_ld = os.path.join(shim_dir, "shim.ld")
     shim_elf = os.path.join(out_dir, "shim.elf")
@@ -60,10 +62,11 @@ def main():
     subprocess.run(["clang", "-target", "aarch64-none-elf"] + cflags + ["-c", console_c, "-o", console_o], check=True)
     subprocess.run(["clang", "-target", "aarch64-none-elf"] + cflags + ["-c", fdt_c, "-o", fdt_o], check=True)
     subprocess.run(["clang", "-target", "aarch64-none-elf"] + cflags + ["-c", loader_c, "-o", loader_o], check=True)
+    subprocess.run(["clang", "-target", "aarch64-none-elf"] + cflags + ["-c", sdhci_c, "-o", sdhci_o], check=True)
 
     print("[2/5] Linking shim.elf with ld.lld...")
     subprocess.run([
-        "ld.lld", "-T", shim_ld, start_o, main_o, console_o, fdt_o, loader_o, "-o", shim_elf
+        "ld.lld", "-T", shim_ld, start_o, main_o, console_o, fdt_o, loader_o, sdhci_o, "-o", shim_elf
     ], check=True)
 
     print("[3/5] Extracting raw binary with llvm-objcopy...")

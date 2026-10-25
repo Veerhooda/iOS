@@ -148,11 +148,31 @@ Each entry describes:
 - **Condition for Removal / M5 Requirement:**  
   Retain for HFS+ root filesystem support until APFS or another filesystem driver is operational.
   **Critical M5 Rule:** Before mounting a real, writable, journaled root partition from persistent storage (e.g. UFS / eMMC), mount it read-only first (`rd=... -s`) and closely verify journal replay, block allocation, and buffer-cache synchronization.
-  Permanent driver for HFS+ root filesystem until APFS support or alternative storage filesystem is brought up.
+  ---
 
----
+## 11. In-Kernel eMMC 5.0 / SDHCI Block Device Driver & Bare-Metal Shim Probe (Milestone 5)
 
-## 10. GICv2 Interrupt Controller & ARM Generic Timer Integration (Milestone 4b)
+- **Files:**  
+  `shim/sdhci.c`  
+  `shim/sdhci.h`  
+  `shim/main.c`  
+  `shim/build.py`  
+  `bsd/dev/op2_emmc.c`  
+  `bsd/conf/files`  
+  `iokit/bsddev/IOKitBSDInit.cpp`  
+  `bsd/kern/bsd_init.c`
+- **Why it was necessary:**  
+  Milestone 4 loaded the root filesystem from an in-memory RAM disk (`rd=md0`). To advance to Milestone 5, Darwin/XNU requires real root mounting from the OnePlus 2's internal 64 GB eMMC 5.0 flash storage.  
+  1. **Little Kernel (aboot) Handoff State:** LK leaves the Qualcomm SDCC 5.0 controller in legacy MCI mode (`CORE_HC_MODE = 0x0`) operating at 200 MHz in HS200 mode with `CORE_CLK_PWRSAVE` enabled and DLL locked. In this state, the eMMC 5.0 card ignores standard `CMD0(0x0)` resets, and idle clock gating prevents the mandatory 74-clock initialization sequence.  
+  2. **Bare-Metal Initialization (`shim/sdhci.c`):** Reset Qualcomm Core via `CORE_POWER |= CORE_SW_RST`, transition to Host Controller mode (`CORE_HC_MODE = HC_MODE_EN | FF_CLK_SW_RST_DIS`), clear `CORE_CLK_PWRSAVE` in `CORE_VENDOR_SPEC`, power-down and reset DLL (`CORE_DLL_CONFIG |= CORE_DLL_RST | CORE_DLL_PDN`), and issue JEDEC eMMC 5.0 `CMD0(0xF0F0F0F0)` (Pre-Idle) followed by `CMD0(0x0)` (Idle). Once in Idle, `CMD1` voltage negotiation succeeds immediately on the first attempt (`OCR=0xC0FF8080`, High Capacity), followed by `CMD2` (CID), `CMD3` (assign RCA = 1), `CMD7` (TRAN state), `CMD6` (switch to 8-bit bus width), and switch clock to 25 MHz.  
+  3. **In-Kernel XNU Block Device (`bsd/dev/op2_emmc.c`):** Implements a polled Darwin `bdevsw` and `cdevsw` driver. On boot, `op2_emmc_init()` reads GPT partition tables from eMMC, locates the partition targeted by `emmcroot=<name>` (e.g. `system` or `userdata`), and registers `/dev/emmcroot0` and `/dev/remmcroot0`.  
+  4. **Strict Read-Only Enforcement:** Buffer-cache requests (`op2_emmc_strategy()`) and character device writes (`op2_emmc_write()`) strictly reject writes with `EROFS` to protect device storage against accidental corruption during early bring-up.  
+  5. **Bounded Mountroot Panic:** In `bsd_init.c`, if `vfs_mountroot()` fails, an explicit `#if defined(ARM64_BOARD_CONFIG_MSM8994)` panic terminates execution and warm-resets via `PS_HOLD = 0` to TWRP, eliminating infinite wait loops and avoiding battery pulls.
+- **Risks & Userland Impact:**  
+  Block I/O uses synchronous polled PIO through `SDHCI_BUFFER` (128 words per 512-byte block) at 25 MHz rather than asynchronous DMA/ADMA2. Writes are blocked (`EROFS`).
+- **Condition for Removal:**  
+  Retain `op2_emmc.c` as the persistent block driver. Upgrade to SDHCI ADMA2 (scatter-gather DMA) with interrupt completion (`SPI 123` / `INTID 155`), HS200 / HS400 bus speeds, and writable filesystem support after journal replay verification.
+
 
 - **Files:**  
   `iokit/Kernel/arm/OP2InterruptController.h`  

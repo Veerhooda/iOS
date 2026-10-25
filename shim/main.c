@@ -5,6 +5,7 @@
 #include "console.h"
 #include "fdt.h"
 #include "loader.h"
+#include "sdhci.h"
 
 #define RAMOOPS_CONSOLE	0xac0be000UL
 #define RAMOOPS_SIG	0x43474244U
@@ -33,7 +34,7 @@ struct persistent_ram_buffer {
 	char data[];
 };
 
-static int is_qemu = 0;
+int is_qemu = 0;
 
 static void ramoops_init(void)
 {
@@ -189,6 +190,10 @@ void shim_main(uint64_t fdt_addr, uint64_t entry_pc)
 					ramoops_puts("[SHIM] Hardware Watchdog disabled (prevents PMIC emergency latch off)\n");
 				}
 			}
+
+			/* Milestone 5: Bare-metal eMMC / SDHCI Probe */
+			sdhci_probe();
+
 			ramoops_puts("\n[SHIM] Initiating Darwin/XNU payload boot sequence...\n");
 			const char *err = loader_boot(fdt_addr);
 			ramoops_puts("\n[SHIM] loader_boot error: ");
