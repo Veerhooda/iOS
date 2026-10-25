@@ -96,6 +96,18 @@ static void delay_sec(uint32_t sec)
 	}
 }
 
+static int str_contains(const char *haystack, const char *needle)
+{
+	for (int i = 0; haystack[i] != '\0'; i++) {
+		int j = 0;
+		while (needle[j] != '\0' && haystack[i + j] == needle[j])
+			j++;
+		if (needle[j] == '\0')
+			return 1;
+	}
+	return 0;
+}
+
 static void watchdog_arm(uint32_t seconds)
 {
 	if (is_qemu) return;
@@ -106,7 +118,9 @@ static void watchdog_arm(uint32_t seconds)
 	wdt[0x08 / 4] = 1;                     /* WDT0_EN */
 	wdt[0x04 / 4] = 1;                     /* WDT0_RST */
 	__asm__ volatile("dmb sy" ::: "memory");
-	ramoops_puts("[SHIM] Hardware Watchdog armed (35s bite timeout at 0xf9017000)\n");
+	ramoops_puts("[SHIM] Hardware Watchdog armed (bite timeout = ");
+	ramoops_hex(seconds + 5, 2);
+	ramoops_puts("s at 0xf9017000)\n");
 }
 
 static void reset_to_recovery(void)
@@ -167,7 +181,13 @@ void shim_main(uint64_t fdt_addr, uint64_t entry_pc)
 			if (!is_qemu) {
 				/* Set restart reason to RECOVERY (0x77665502) in IMEM so any reset reboots to TWRP */
 				*(volatile uint32_t *)0xfe87f65cUL = 0x77665502;
-				watchdog_arm(30);
+
+				const char *cmdline = (const char *)(rd_start + 0x48);
+				if (str_contains(cmdline, "wdt=1") || str_contains(cmdline, "wdt_en=1")) {
+					watchdog_arm(30);
+				} else {
+					ramoops_puts("[SHIM] Hardware Watchdog disabled (prevents PMIC emergency latch off)\n");
+				}
 			}
 			ramoops_puts("\n[SHIM] Initiating Darwin/XNU payload boot sequence...\n");
 			const char *err = loader_boot(fdt_addr);

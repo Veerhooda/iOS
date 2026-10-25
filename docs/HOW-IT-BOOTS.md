@@ -11,8 +11,8 @@ flowchart TD
     A["Fastboot Host ('fastboot boot xnu-boot.img')"] --> B["Qualcomm Little Kernel (aboot) in RAM at 0x0F900000"]
     B --> C["Verify Header & Extract Ramdisk to 0x02000000"]
     B --> D["Jump to Kernel Entry PA 0x00080000 (shim/start.S)"]
-    D --> E["Initialize Shim: Stack, Watchdog & IMEM Cookie"]
-    E --> F["Parse LK FDT Blob (DTB at offset 0x6000)"]
+    D --> E["Initialize Shim: Stack & IMEM Cookie (0xfe87f65c = 0x77665502)"]
+    E --> F["Parse LK FDT Blob (DTB at offset 0x7000)"]
     F --> G["Parse OP2XNU01 Payload from Ramdisk at 0x02000000"]
     G --> H["Relocate Mach-O Segments to DRAM (0x10200000+)"]
     H --> I["Place Apple Device Tree (ADT) and struct boot_args"]
@@ -37,7 +37,7 @@ flowchart TD
   - `tags_addr`: `0x00000100`
 - **DTB Appending Mechanism:**
   - Qualcomm's 64-bit Little Kernel reads 4 bytes at offset `0x2C` in the kernel binary to determine the offset of appended Device Tree Blobs (DTBs).
-  - The build script (`shim/build.py`) calculates the exact padded size of `shim.bin` (`0x6000` / 24,576 bytes) and writes it into offset `0x2C` of `shim.bin`.
+  - The build script (`shim/build.py`) calculates the exact padded size of `shim.bin` (4 KB aligned) and writes it into offset `0x2C` of `shim.bin`.
   - The stock 7-DTB blob (`dtbs.blob`) is concatenated immediately behind the shim.
   - LK detects the magic `0xd00dfeed` at offset `0x2C`, selects the DTB matching `msm8994` hardware (`qcom,msm-id = <207 0x20001>` for OnePlus 2), appends the `/chosen` node with `linux,initrd-start` and `linux,initrd-end`, and places the pointer in CPU register `x0`.
 - **LK Entry Point:**
@@ -58,14 +58,17 @@ The boot shim bridges the gap between Qualcomm's Linux/Android boot protocol and
      ```
    - Passes control to `shim/main.c`.
 
-2. **Watchdog Arming (`shim/main.c`)**:
-   - The Snapdragon 810 hardware watchdog (`qcom,wdt@f9017000`) is configured:
+2. **Watchdog Management (`shim/main.c`)**:
+   - The Snapdragon 810 hardware watchdog (`qcom,wdt@f9017000`) is mapped at physical address `0xf9017000`:
      - Clock: `32,765 Hz`
-     - `WDT0_BARK_TIME (0x10)` = 30 seconds
-     - `WDT0_BITE_TIME (0x14)` = 35 seconds
-     - `WDT0_EN (0x08)` = 1
-     - `WDT0_RST (0x04)` = 1
-   - If XNU hangs before panic or during early bring-up, the hardware watchdog bites in 35 seconds, triggering an automated warm reset straight into TWRP.
+     - `WDT0_BARK_TIME (0x10)`
+     - `WDT0_BITE_TIME (0x14)`
+     - `WDT0_EN (0x08)`
+     - `WDT0_RST (0x04)` (pet register)
+   - **Important Hardware Finding (Bite vs PS_HOLD):**
+     - A hardware **watchdog bite** on MSM8994 is handled by Qualcomm TrustZone / RPM as a fatal security/hardware fault, latching the PM8994 PMIC into emergency power-off shutdown rather than an automated warm reboot.
+     - In contrast, software deassertion of `PS_HOLD = 0` (`0xfc4ab000 = 0`) signals a clean system restart request to the PMIC, preserving DRAM power and routing through Little Kernel directly to TWRP recovery via the IMEM cookie (`0xfe87f65c = 0x77665502`).
+     - To avoid unwanted PMIC emergency shutdowns during kernel bring-up, the watchdog can be explicitly disabled via boot-arg (`nowdt=1` or `wdt=0`), and once XNU enters active scheduling, the kernel pets `WDT0_RST` from its timer interrupt handler.
 
 3. **FDT Parsing (`shim/fdt.c`)**:
    - Traverses the flattened device tree passed in `x0` to locate `/chosen`:
