@@ -56,7 +56,7 @@ Each entry describes:
 - **Risks & Userland Impact:**  
   The PRNG has **no physical entropy source**. It is seeded solely by the CPU virtual timer tick (`ml_get_timebase()`) and a static string (`"xnu msm8994 kernel random"`). ASLR base addresses, UUIDs, stack canaries, and `/dev/urandom` in userland are predictable across reboots.
 - **Condition for Removal:**  
-  Implement an entropy feeder using Qualcomm's hardware PRNG (`0x00784000` / `0x00780000` Crypto Engine) or read random seeds passed from LK bootloader in the device tree `/chosen/rng-seed`.
+  Implement an entropy feeder using Qualcomm's hardware Crypto Engine (`0xfd440000` / `0xfd3c0000` in device tree `qcrypto`) or read random seeds passed from LK bootloader in the device tree `/chosen/rng-seed`.
 
 ---
 
@@ -78,12 +78,12 @@ Each entry describes:
 - **Files:**  
   `iokit/Kernel/arm/OP2PlatformExpert.cpp`
 - **Why it was necessary:**  
-  - `ml_init_max_cpus(1)`: MSM8994 has 8 cores (4x Cortex-A57 + 4x Cortex-A53). Bringing up secondary cores requires PSCI SMP routing. Restricting to CPU 0 avoids secondary core panics before SMP brings up CPU nubs.
+  - `ml_init_max_cpus(1)`: MSM8994 has 8 cores (4x Cortex-A57 + 4x Cortex-A53). Bringing up secondary cores requires Qualcomm ACC (Application Clock Controller) clock/voltage regulation and CPU release sequence (`enable-method = "qcom,8994-arm-cortex-acc"` in device tree; no PSCI). Restricting to CPU 0 avoids secondary core panics before SMP brings up CPU nubs.
   - `publishResource("IORTC", kOSBooleanTrue)`: XNU's `bsd_init` -> `inittodr` calls `IOService::waitForService(IOService::resourceMatching("IORTC"))`. Without real RTC hardware publishing this service, the kernel halts forever waiting for the clock. Publishing it unconditionally unblocks `inittodr`.
 - **Risks & Userland Impact:**  
   The system runs strictly on a single core (`CPU 0`). Time of day clock (`gettimeofday`, calendar time) initializes to Unix epoch (1970) or last build timestamp because no real PMIC RTC registers are read.
 - **Condition for Removal:**  
-  - For SMP: Implement secondary CPU spin-up via PSCI `CPU_ON` calls in `OP2PlatformExpert::startCPU()`.
+  - For SMP: Implement secondary CPU spin-up via Qualcomm ACC / CPU release registers in `OP2PlatformExpert::startCPU()`.
   - For RTC: Write a minimal driver matching Qualcomm PM8994 RTC (`0x02005000` SPMI slave) to publish `IORTC` backed by real hardware registers.
 
 ---
@@ -106,8 +106,8 @@ Each entry describes:
 - **Files:**  
   `shim/main.c`
 - **Why it was necessary:**  
-  The APPS SoC hardware watchdog at `0xf9017000` was tested with a deliberate hang. When the watchdog counter expired, rather than triggering a clean warm reset, the Qualcomm PM8994 PMIC entered an emergency shutdown / power-latch off state (or EDL mode), leaving the device completely unresponsive over USB until a battery disconnect. The watchdog was disabled in `shim/main.c` to prevent unrecoverable device lockouts.
+  The APPS SoC hardware watchdog at `0xf9017000` was tested with a deliberate hang. When the watchdog counter expired, rather than triggering a clean warm reset, the phone completely dropped off USB (`adb devices`, `fastboot devices`, and host USB enumeration were all empty) and required a physical battery disconnect/reconnect to recover. The exact underlying cause is unknown—candidates include PMIC power rails latching off, or the device trapping into Qualcomm Emergency Download (EDL / 9008) or RAM-dump mode if download cookies in IMEM (`0xfe80f000` / `0xfe80ffe0`) were armed. The watchdog was disabled in `shim/main.c` to prevent unrecoverable device lockouts.
 - **Risks & Userland Impact:**  
   If the kernel hangs in a tight spinlock or fault before panic handling, the phone will stay powered on and warm without automatically rebooting.
 - **Condition for Removal:**  
-  Configure Qualcomm TrustZone (via SCM call) to configure `TCSR_WDT_CFG` to redirect watchdog expiration into a PMIC warm restart rather than hard latch-off. Until proven with a successful warm reboot, watchdog remains disabled in EL1.
+  Investigate IMEM download-mode cookies (`msm_poweroff.c`) and confirm whether clearing them or configuring TrustZone SCM calls allows watchdog expiration to trigger a clean warm reboot. Until proven with an autonomous reboot into TWRP, the watchdog remains disabled in EL1, and all test images must be bounded by deliberate software panic/reset hooks.
