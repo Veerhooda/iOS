@@ -282,37 +282,46 @@ def tweak_activation(root):
     safe_chmod(root_pref_dir, 0o755)
     save_plist(os.path.join(root_pref_dir, 'com.apple.purplebuddy.plist'), purplebuddy_dict, 0, 0, 0o600)
 
-    # Seed activation ark in mobile internal
+    ark_dict = {
+        'ActivationState': 'Activated',
+        '-ActivationState': 'Activated',
+        'BrickState': False,
+        '-BrickState': False,
+        'BuildVersion': BUILD,
+        '-BuildVersion': BUILD,
+        'ProductVersion': VERSION,
+        '-ProductVersion': VERSION,
+        'DataMigrationCompleted': True,
+        '-DataMigrationCompleted': True,
+        'PreSydroDataMigrationCompleted': True,
+        '-PreSydroDataMigrationCompleted': True,
+        'LastActivated': 0,
+        '-LastActivated': 0,
+        'UniqueDeviceID': '0000000000000000000000000000000000000000',
+        '-UniqueDeviceID': '0000000000000000000000000000000000000000',
+    }
+
+    # 1. Seed activation ark in mobile internal
     ark_dir = os.path.join(root, 'private/var/mobile/Library/internal')
     os.makedirs(ark_dir, exist_ok=True)
     safe_chown(ark_dir, MOBILE_UID, MOBILE_GID)
     safe_chmod(ark_dir, 0o755)
+    save_plist(os.path.join(ark_dir, 'data_ark.plist'), ark_dict, MOBILE_UID, MOBILE_GID, 0o600)
 
-    ark_file = os.path.join(ark_dir, 'data_ark.plist')
-    save_plist(ark_file, {
-        '-ActivationState': 'Activated',
-        '-BrickState': False,
-        '-BuildVersion': BUILD,
-        '-ProductVersion': VERSION,
-        '-DataMigrationCompleted': True,
-        '-PreSydroDataMigrationCompleted': True,
-    }, MOBILE_UID, MOBILE_GID, 0o600)
+    # 2. Seed activation ark in mobile mad (MobileActivationDaemon directory)
+    mad_dir = os.path.join(root, 'private/var/mobile/Library/mad')
+    os.makedirs(mad_dir, exist_ok=True)
+    safe_chown(mad_dir, MOBILE_UID, MOBILE_GID)
+    safe_chmod(mad_dir, 0o755)
+    save_plist(os.path.join(mad_dir, 'data_ark.plist'), ark_dict, MOBILE_UID, MOBILE_GID, 0o600)
 
-    # Seed activation ark in root lockdown
+    # 3. Seed activation ark in root lockdown
     lockdown_dir = os.path.join(root, 'private/var/root/Library/Lockdown')
     os.makedirs(lockdown_dir, exist_ok=True)
     safe_chmod(lockdown_dir, 0o755)
-    lockdown_ark = os.path.join(lockdown_dir, 'data_ark.plist')
-    save_plist(lockdown_ark, {
-        '-ActivationState': 'Activated',
-        '-BrickState': False,
-        '-BuildVersion': BUILD,
-        '-ProductVersion': VERSION,
-        '-DataMigrationCompleted': True,
-        '-PreSydroDataMigrationCompleted': True,
-    }, 0, 0, 0o600)
+    save_plist(os.path.join(lockdown_dir, 'data_ark.plist'), ark_dict, 0, 0, 0o600)
 
-    # Seed valid activation record
+    # 4. Seed valid activation record
     rec_dir = os.path.join(lockdown_dir, 'activation_records')
     os.makedirs(rec_dir, exist_ok=True)
     safe_chmod(rec_dir, 0o755)
@@ -321,7 +330,104 @@ def tweak_activation(root):
         'ActivationState': 'Activated',
         'UniqueDeviceID': '0000000000000000000000000000000000000000',
     }, 0, 0, 0o600)
-    print("  [ACTIVATION] Mobile activation state seeded as Activated (internal + lockdown)")
+
+    # 5. Pre-seed System container for com.apple.mobileactivationd
+    sys_cont_uuid = '2C778CD2-4523-440F-8B58-D3C4E5E9C57D'
+    sys_cont_dir = os.path.join(root, f'private/var/containers/Data/System/{sys_cont_uuid}')
+    os.makedirs(os.path.join(sys_cont_dir, 'Library/internal'), exist_ok=True)
+    safe_chmod(sys_cont_dir, 0o755)
+    save_plist(os.path.join(sys_cont_dir, '.com.apple.mobile_container_manager.metadata.plist'), {
+        'MCMMetadataIdentifier': 'com.apple.mobileactivationd',
+        'MCMMetadataUUID': sys_cont_uuid,
+        'MCMMetadataSchemaVersion': 1,
+        'MCMMetadataType': 12,
+    }, 0, 0, 0o644)
+    save_plist(os.path.join(sys_cont_dir, 'Library/internal/data_ark.plist'), ark_dict, 0, 0, 0o600)
+
+    # 6. Pre-seed Shared SystemGroup container for systemgroup.com.apple.mobileactivationd
+    grp_cont_uuid = '64D5676B-AE87-4BF6-BE4A-D871FF4E05DC'
+    grp_cont_dir = os.path.join(root, f'private/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobileactivationd')
+    os.makedirs(os.path.join(grp_cont_dir, 'Library/internal'), exist_ok=True)
+    safe_chmod(grp_cont_dir, 0o755)
+    save_plist(os.path.join(grp_cont_dir, '.com.apple.mobile_container_manager.metadata.plist'), {
+        'MCMMetadataIdentifier': 'systemgroup.com.apple.mobileactivationd',
+        'MCMMetadataUUID': grp_cont_uuid,
+        'MCMMetadataSchemaVersion': 1,
+        'MCMMetadataType': 13,
+    }, 0, 0, 0o644)
+    save_plist(os.path.join(grp_cont_dir, 'Library/internal/data_ark.plist'), ark_dict, 0, 0, 0o600)
+
+    # 7. Surgical binary patches for mobileactivationd
+    patch_mobileactivationd(root)
+
+    # 8. Surgical binary patches for SpringBoard
+    patch_springboard(root)
+
+    print("  [ACTIVATION] Mobile activation state seeded as Activated across all paths (internal, mad, lockdown, system containers) and binaries patched")
+
+
+def patch_mobileactivationd(root):
+    path = os.path.join(root, 'usr/libexec/mobileactivationd')
+    if not os.path.exists(path):
+        return
+    with open(path, 'rb') as f:
+        data = bytearray(f.read())
+
+    patched = False
+    # 1. 0x3609c: tbz w0, #0x0, 0x100036130 (a0 04 00 36) -> nop (1f 20 03 d5)
+    if data[0x3609c:0x360a0] == bytes.fromhex('a0040036'):
+        data[0x3609c:0x360a0] = bytes.fromhex('1f2003d5')
+        print("  [PATCH] mobileactivationd: nop tbz at 0x3609c (skip SEP migration)")
+        patched = True
+
+    # 2. 0x3718c: tbz w20, #0x0, 0x100037a88 (f4 47 00 36) -> nop (1f 20 03 d5)
+    if data[0x3718c:0x37190] == bytes.fromhex('f4470036'):
+        data[0x3718c:0x37190] = bytes.fromhex('1f2003d5')
+        print("  [PATCH] mobileactivationd: nop tbz at 0x3718c (skip crash branch)")
+        patched = True
+
+    # 3. 0x20d438: pointer to @"Unactivated" (0x100213918) -> @"Activated" (0x100213938)
+    if data[0x20d438:0x20d440] == bytes.fromhex('1839210001000000'):
+        data[0x20d438:0x20d440] = bytes.fromhex('3839210001000000')
+        print("  [PATCH] mobileactivationd: fallback ActivationState -> Activated")
+        patched = True
+
+    if patched:
+        with open(path, 'wb') as f:
+            f.write(data)
+        safe_chmod(path, 0o755)
+
+
+def patch_springboard(root):
+    path = os.path.join(root, 'System/Library/CoreServices/SpringBoard.app/SpringBoard')
+    if not os.path.exists(path):
+        return
+    with open(path, 'rb') as f:
+        data = bytearray(f.read())
+
+    patched = False
+    # 1. -[SBSetupManager isInSetupMode] at 0x2182c -> mov w0, #0; ret (00 00 80 52 c0 03 5f d6)
+    if data[0x2182c:0x21834] == bytes.fromhex('08530090019544f9'):
+        data[0x2182c:0x21834] = bytes.fromhex('00008052c0035fd6')
+        print("  [PATCH] SpringBoard: -[SBSetupManager isInSetupMode] -> return NO")
+        patched = True
+
+    # 2. -[SBLockdownManager brickedDevice] at 0x2c587c -> mov w0, #0; ret (00 00 80 52 c0 03 5f d6)
+    if data[0x2c587c:0x2c5884] == bytes.fromhex('fd7bbfa9fd030091'):
+        data[0x2c587c:0x2c5884] = bytes.fromhex('00008052c0035fd6')
+        print("  [PATCH] SpringBoard: -[SBLockdownManager brickedDevice] -> return NO")
+        patched = True
+
+    # 3. -[SBLockdownManager lockdownState] at 0x2c58a0 -> mov w0, #2; ret (40 00 80 52 c0 03 5f d6)
+    if data[0x2c58a0:0x2c58a8] == bytes.fromhex('f44fbea9fd7b01a9'):
+        data[0x2c58a0:0x2c58a8] = bytes.fromhex('40008052c0035fd6')
+        print("  [PATCH] SpringBoard: -[SBLockdownManager lockdownState] -> return 2 (Activated)")
+        patched = True
+
+    if patched:
+        with open(path, 'wb') as f:
+            f.write(data)
+        safe_chmod(path, 0o755)
 
 
 def tweak_graphics(root):
