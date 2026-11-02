@@ -363,6 +363,9 @@ def tweak_activation(root):
     # 8. Surgical binary patches for SpringBoard
     patch_springboard(root)
 
+    # 9. Surgical binary patches for backboardd
+    patch_backboardd(root)
+
     print("  [ACTIVATION] Mobile activation state seeded as Activated across all paths (internal, mad, lockdown, system containers) and binaries patched")
 
 
@@ -390,6 +393,63 @@ def patch_mobileactivationd(root):
     if data[0x20d438:0x20d440] == bytes.fromhex('1839210001000000'):
         data[0x20d438:0x20d440] = bytes.fromhex('3839210001000000')
         print("  [PATCH] mobileactivationd: fallback ActivationState -> Activated")
+        patched = True
+
+    if patched:
+        with open(path, 'wb') as f:
+            f.write(data)
+        safe_chmod(path, 0o755)
+
+
+def patch_backboardd(root):
+    path = os.path.join(root, 'usr/libexec/backboardd')
+    if not os.path.exists(path):
+        return
+    with open(path, 'rb') as f:
+        data = bytearray(f.read())
+
+    patched = False
+
+    # 1. 0x25740: -[BKDisplayRenderOverlay presentWithAnimationSettings:]
+    # Original: sub sp, sp, #0xc0 (ff 03 03 d1 f8 5f 08 a9)
+    # Patch to: mov w0, #0; ret (00 00 80 52 c0 03 5f d6)
+    # This prevents ANY render overlay (boot logo level -1, level 2999, bootUI) from ever being presented to the display
+    if data[0x25740:0x25748] == bytes.fromhex('ff0303d1f85f08a9'):
+        data[0x25740:0x25748] = bytes.fromhex('00008052c0035fd6')
+        print("  [PATCH] backboardd: -[BKDisplayRenderOverlay presentWithAnimationSettings:] -> return NO")
+        patched = True
+
+    # 2. 0x4ed78: -[BKSystemApplication finishedStartup]
+    # Original: nop; ldrsw x8, 0x1000bad3c (1f 20 03 d5 08 fe 35 98)
+    # Patch to: mov w0, #1; ret (20 00 80 52 c0 03 5f d6)
+    # This informs backboardd that the system app has completed startup
+    if data[0x4ed78:0x4ed80] == bytes.fromhex('1f2003d508fe3598'):
+        data[0x4ed78:0x4ed80] = bytes.fromhex('20008052c0035fd6')
+        print("  [PATCH] backboardd: -[BKSystemApplication finishedStartup] -> return YES")
+        patched = True
+
+    # 3. 0x6bf34: -[BKBootUIPresenter _queue_addOverlay]
+    # Original: sub sp, sp, #0x60 (ff 83 01 d1)
+    # Patch to: ret (c0 03 5f d6)
+    if data[0x6bf34:0x6bf38] == bytes.fromhex('ff8301d1'):
+        data[0x6bf34:0x6bf38] = bytes.fromhex('c0035fd6')
+        print("  [PATCH] backboardd: -[BKBootUIPresenter _queue_addOverlay] -> ret")
+        patched = True
+
+    # 4. 0x6c12c: -[BKBootUIPresenter _queue_addUnderlay]
+    # Original: sub sp, sp, #0x60 (ff 83 01 d1)
+    # Patch to: ret (c0 03 5f d6)
+    if data[0x6c12c:0x6c130] == bytes.fromhex('ff8301d1'):
+        data[0x6c12c:0x6c130] = bytes.fromhex('c0035fd6')
+        print("  [PATCH] backboardd: -[BKBootUIPresenter _queue_addUnderlay] -> ret")
+        patched = True
+
+    # 5. 0x6bcf4: -[BKBootUIPresenter _queue_updateOverlay]
+    # Original: tbz w21, #0x0, 0x10006bd54 (15 03 00 36)
+    # Patch to: b 0x10006be38 (51 00 00 14)
+    if data[0x6bcf4:0x6bcf8] == bytes.fromhex('15030036'):
+        data[0x6bcf4:0x6bcf8] = bytes.fromhex('51000014')
+        print("  [PATCH] backboardd: -[BKBootUIPresenter _queue_updateOverlay] -> remove overlay")
         patched = True
 
     if patched:
@@ -528,6 +588,21 @@ def apply_tweaks(root):
             'SilentICDPUpgrade'
         )
     })
+    # Configure backboardd to suppress boot UI overlay and watchdog kills
+    backboardd_dict = {
+        'BKHideAppleLogoOnLaunch': True,
+        'hideAppleLogoOnLaunch': True,
+        'BKNoWatchdogs': True,
+        'BKEnableStevenoteRotation': False,
+        'BKDisableCloneMirroring': False,
+        'BKALSUserPreferencesEpoch': 1,
+    }
+    merge_pref(root, 'com.apple.backboardd', backboardd_dict)
+    save_plist(os.path.join(root_pref_dir, 'com.apple.backboardd.plist'), backboardd_dict, 0, 0, 0o600)
+    lib_pref_dir = os.path.join(root, 'Library/Preferences')
+    os.makedirs(lib_pref_dir, exist_ok=True)
+    save_plist(os.path.join(lib_pref_dir, 'com.apple.backboardd.plist'), backboardd_dict, 0, 0, 0o644)
+
     print("[TWEAKS] All bring-up tweaks applied successfully!")
 
 
