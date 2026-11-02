@@ -53,15 +53,26 @@ OP2_ECID = 0x4F50320000000001  # 'OP2\0' + 1
 N56AP_ADT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '../research/ipsw-12/n56ap.adt')
 
 
-def n56ap_product(path=N56AP_ADT):
-    """Extract /product properties from the real N56AP device tree."""
+def sanitize_n56ap_node(name, ph, path=N56AP_ADT):
+    """Extract an entire node (with all props and children) from real N56AP device tree,
+    filtering out placeholder flags (bit 31) and assigning valid sequential phandles."""
     if not os.path.exists(path):
-        print(f'warning: {path} missing, no /product node', file=sys.stderr)
         return None
     root, _ = adt.parse(open(path, 'rb').read())
+    def _clean(src):
+        n = adt.Node()
+        for k, f, v in src.props:
+            if k == 'AAPL,phandle' or f:
+                continue
+            n.props.append((k, 0, v))
+        n.props.insert(1, ('AAPL,phandle', 0, ph()[1]))
+        for ch in src.children:
+            n.children.append(_clean(ch))
+        return n
     for c in root.children:
-        if dict((k, v) for k, f, v in c.props).get('name') == b'product\0':
-            return [(k, v) for k, f, v in c.props if not f and k not in ('name', 'AAPL,phandle')]
+        n = dict((k, v) for k, f, v in c.props).get('name')
+        if n == (name.encode() + b'\0'):
+            return _clean(c)
     return None
 
 
@@ -190,6 +201,7 @@ def build(seed=None, qemu=False):
         ph(),
         ('device_type', cstr('op2-io')),
         ('compatible', cstr('op2-io') + cstr('arm-io')),
+        ('soc-generation', cstr('H7')),
         ('#address-cells', u32(2)),
         ('#size-cells', u32(2)),
         ('ranges', u64(0, SOC_BASE, 0x100000000 - SOC_BASE)),
@@ -212,8 +224,10 @@ def build(seed=None, qemu=False):
         ('opposed-power-vol-buttons', u32(1)),
     ])
 
-    product_props = n56ap_product()
-    product = [node('product', [ph()] + product_props)] if product_props else []
+    real_product = sanitize_n56ap_node('product', ph)
+    product = [real_product] if real_product is not None else []
+
+    options = [node('options', [ph()])]
 
     pram = node('pram', [ph(), ('reg', u64(panic_base) + u64(PANIC_LOG_SIZE))])
 
@@ -226,7 +240,7 @@ def build(seed=None, qemu=False):
         ('manufacturer', cstr('Apple Inc.')),
         ('#address-cells', u32(2)),
         ('#size-cells', u32(2)),
-    ], [chosen, defaults, cpus, arm_io, fbcon, buttons, pram] + product)
+    ], [chosen, defaults, cpus, arm_io, fbcon, buttons, pram] + product + options)
 
 
 if __name__ == '__main__':

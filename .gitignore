@@ -27,3 +27,4 @@ __pycache__/
 # OS artifacts
 .DS_Store
 build.log
+tools/lzssdec
