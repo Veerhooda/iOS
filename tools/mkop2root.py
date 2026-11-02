@@ -134,6 +134,8 @@ def tweak_launchd(root):
         'com.apple.aggregated': True,
         'com.apple.aggregated.addaily': True,
         'com.apple.bluetoothd': True,
+        'com.apple.atc': True,
+        'com.apple.mediaserverd': True,
     }, 0, 0, 0o644)
     migrated_flag = os.path.join(db_dir, 'disabled.migrated')
     if not os.path.exists(migrated_flag):
@@ -366,6 +368,9 @@ def tweak_activation(root):
     # 9. Surgical binary patches for backboardd
     patch_backboardd(root)
 
+    # 10. Surgical patch for CoreFoundation CFRelease(NULL) in dyld shared cache
+    patch_shared_cache(root)
+
     print("  [ACTIVATION] Mobile activation state seeded as Activated across all paths (internal, mad, lockdown, system containers) and binaries patched")
 
 
@@ -411,12 +416,11 @@ def patch_backboardd(root):
     patched = False
 
     # 1. 0x25740: -[BKDisplayRenderOverlay presentWithAnimationSettings:]
-    # Original: sub sp, sp, #0xc0 (ff 03 03 d1 f8 5f 08 a9)
-    # Patch to: mov w0, #0; ret (00 00 80 52 c0 03 5f d6)
-    # This prevents ANY render overlay (boot logo level -1, level 2999, bootUI) from ever being presented to the display
-    if data[0x25740:0x25748] == bytes.fromhex('ff0303d1f85f08a9'):
-        data[0x25740:0x25748] = bytes.fromhex('00008052c0035fd6')
-        print("  [PATCH] backboardd: -[BKDisplayRenderOverlay presentWithAnimationSettings:] -> return NO")
+    # Must be ORIGINAL: sub sp, sp, #0xc0 (ff 03 03 d1 f8 5f 08 a9)
+    # If it was patched to stub (00 00 80 52 c0 03 5f d6), restore original!
+    if data[0x25740:0x25748] == bytes.fromhex('00008052c0035fd6'):
+        data[0x25740:0x25748] = bytes.fromhex('ff0303d1f85f08a9')
+        print("  [RESTORE] backboardd: -[BKDisplayRenderOverlay presentWithAnimationSettings:] -> original")
         patched = True
 
     # 2. 0x4ed78: -[BKSystemApplication finishedStartup]
@@ -429,27 +433,35 @@ def patch_backboardd(root):
         patched = True
 
     # 3. 0x6bf34: -[BKBootUIPresenter _queue_addOverlay]
-    # Original: sub sp, sp, #0x60 (ff 83 01 d1)
-    # Patch to: ret (c0 03 5f d6)
-    if data[0x6bf34:0x6bf38] == bytes.fromhex('ff8301d1'):
-        data[0x6bf34:0x6bf38] = bytes.fromhex('c0035fd6')
-        print("  [PATCH] backboardd: -[BKBootUIPresenter _queue_addOverlay] -> ret")
+    # Must be ORIGINAL: sub sp, sp, #0x60 (ff 83 01 d1)
+    if data[0x6bf34:0x6bf38] == bytes.fromhex('c0035fd6'):
+        data[0x6bf34:0x6bf38] = bytes.fromhex('ff8301d1')
+        print("  [RESTORE] backboardd: -[BKBootUIPresenter _queue_addOverlay] -> original")
         patched = True
 
     # 4. 0x6c12c: -[BKBootUIPresenter _queue_addUnderlay]
-    # Original: sub sp, sp, #0x60 (ff 83 01 d1)
-    # Patch to: ret (c0 03 5f d6)
-    if data[0x6c12c:0x6c130] == bytes.fromhex('ff8301d1'):
-        data[0x6c12c:0x6c130] = bytes.fromhex('c0035fd6')
-        print("  [PATCH] backboardd: -[BKBootUIPresenter _queue_addUnderlay] -> ret")
+    # Must be ORIGINAL: sub sp, sp, #0x60 (ff 83 01 d1)
+    if data[0x6c12c:0x6c130] == bytes.fromhex('c0035fd6'):
+        data[0x6c12c:0x6c130] = bytes.fromhex('ff8301d1')
+        print("  [RESTORE] backboardd: -[BKBootUIPresenter _queue_addUnderlay] -> original")
         patched = True
 
     # 5. 0x6bcf4: -[BKBootUIPresenter _queue_updateOverlay]
-    # Original: tbz w21, #0x0, 0x10006bd54 (15 03 00 36)
-    # Patch to: b 0x10006be38 (51 00 00 14)
-    if data[0x6bcf4:0x6bcf8] == bytes.fromhex('15030036'):
-        data[0x6bcf4:0x6bcf8] = bytes.fromhex('51000014')
-        print("  [PATCH] backboardd: -[BKBootUIPresenter _queue_updateOverlay] -> remove overlay")
+    # Must be ORIGINAL: tbz w21, #0x0, 0x10006bd54 (15 03 00 36)
+    # If it was patched to b 0x10006be38 (51 00 00 14), restore original!
+    # Boot time: systemApp is nil -> finishedStartup is 0 -> tbz branches to _queue_addOverlay!
+    if data[0x6bcf4:0x6bcf8] == bytes.fromhex('51000014'):
+        data[0x6bcf4:0x6bcf8] = bytes.fromhex('15030036')
+        print("  [RESTORE] backboardd: -[BKBootUIPresenter _queue_updateOverlay] tbz -> original")
+        patched = True
+
+    # 6. 0x6bd04: -[BKBootUIPresenter _queue_updateOverlay] overlay removal
+    # Original: cbz w8, 0x10006be38 (a8 09 00 34)
+    # Patch to: b 0x10006be38 (4d 00 00 14)
+    # When finishedStartup is YES, unconditionally jump to _queue_removeOverlayWithAnimationSettings:nil
+    if data[0x6bd04:0x6bd08] == bytes.fromhex('a8090034'):
+        data[0x6bd04:0x6bd08] = bytes.fromhex('4d000014')
+        print("  [PATCH] backboardd: _queue_updateOverlay cbz -> b 0x10006be38 (unconditional removal)")
         patched = True
 
     if patched:
@@ -488,6 +500,32 @@ def patch_springboard(root):
         with open(path, 'wb') as f:
             f.write(data)
         safe_chmod(path, 0o755)
+
+
+def patch_shared_cache(root):
+    path = os.path.join(root, 'System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64')
+    if not os.path.exists(path):
+        return
+    with open(path, 'r+b') as f:
+        # 1. 0xdb0d88: CFRelease NULL check
+        # Original: cbz x0, 0x180db0df0 (40 03 00 b4)
+        # Patch to: cbz x0, 0x180db0d90 (40 00 00 b4) -> branches to ret at 0x180db0d90
+        f.seek(0xdb0d88)
+        cur = f.read(4)
+        if cur == bytes.fromhex('400300b4'):
+            f.seek(0xdb0d88)
+            f.write(bytes.fromhex('400000b4'))
+            print("  [PATCH] dyld_shared_cache: CFRelease(NULL) -> return safely")
+
+        # 2. 0xdb0e04: CFRelease halt trap
+        # Original: brk #1 (20 00 20 d4)
+        # Patch to: ret (c0 03 5f d6)
+        f.seek(0xdb0e04)
+        cur = f.read(4)
+        if cur == bytes.fromhex('200020d4'):
+            f.seek(0xdb0e04)
+            f.write(bytes.fromhex('c0035fd6'))
+            print("  [PATCH] dyld_shared_cache: CFRelease trap -> ret")
 
 
 def tweak_graphics(root):
@@ -588,10 +626,10 @@ def apply_tweaks(root):
             'SilentICDPUpgrade'
         )
     })
-    # Configure backboardd to suppress boot UI overlay and watchdog kills
+    # Configure backboardd to allow boot UI overlay presentation and disable watchdog kills
     backboardd_dict = {
-        'BKHideAppleLogoOnLaunch': True,
-        'hideAppleLogoOnLaunch': True,
+        'BKHideAppleLogoOnLaunch': False,
+        'hideAppleLogoOnLaunch': False,
         'BKNoWatchdogs': True,
         'BKEnableStevenoteRotation': False,
         'BKDisableCloneMirroring': False,
