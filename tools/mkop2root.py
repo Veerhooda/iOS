@@ -527,6 +527,16 @@ def patch_shared_cache(root):
             f.write(bytes.fromhex('c0035fd6'))
             print("  [PATCH] dyld_shared_cache: CFRelease trap -> ret")
 
+        # 3. 0x2ee0d714: -[MPAVEndpointRoutingDataSource setRoutingContextUID:] nil assertion
+        # Original: cbz x21, 0x1aee0db04 (95 1f 00 b4) -> throws NSInternalInconsistencyException
+        # Patch to: cbz x21, 0x1aee0dc10 (f5 27 00 b4) -> returns cleanly via function epilogue
+        f.seek(0x2ee0d714)
+        cur = f.read(4)
+        if cur == bytes.fromhex('951f00b4'):
+            f.seek(0x2ee0d714)
+            f.write(bytes.fromhex('f52700b4'))
+            print("  [PATCH] dyld_shared_cache: setRoutingContextUID:(nil) -> return safely")
+
 
 def tweak_graphics(root):
     # Disable Apple GPU bundles without real A8 GPU
