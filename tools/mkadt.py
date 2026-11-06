@@ -126,18 +126,19 @@ def build(seed=None, qemu=False):
         node('asmb', [ph(), ('lp-sip0', u64(0x6f)), ('lp-sip1', u32(1))])
     ])
 
-    # CPUs: Single core cpu0 for bring-up; MPIDR Aff0 = 0
-    cpu_nodes = [
-        node('cpu0', [
+    # CPUs: cpu0 only (SMP parked; run134 hung the phone).
+    # Re-add _cpu_node(1) when resuming multicore (SMP plan Gap 3).
+    def _cpu_node(idx):
+        return node('cpu%d' % idx, [
             ph(),
             ('device_type', cstr('cpu')),
             ('compatible', cstr('arm,cortex-a53') + cstr('ARM,v8')),
-            ('reg', u32(0x00)),
-            ('cpu-id', u32(0)),
+            ('reg', u32(idx)),
+            ('cpu-id', u32(idx)),
             ('cluster-id', u32(0)),
             ('cluster-type', u32(0)),
             ('die-cluster-id', u32(0)),
-            ('cluster-core-id', u32(0)),
+            ('cluster-core-id', u32(idx)),
             ('l2-cache-id', u32(0)),
             ('l3-cache-id', u32(0)),
             ('state', cstr('running')),
@@ -148,7 +149,7 @@ def build(seed=None, qemu=False):
             ('peripheral-frequency', u32(timebase)),
             ('fixed-frequency', u32(timebase)),
         ])
-    ]
+    cpu_nodes = [_cpu_node(0)]
     cpus = node('cpus', [ph(), ('#address-cells', u32(1)),
                          ('#size-cells', u32(0))], cpu_nodes)
 
@@ -196,6 +197,13 @@ def build(seed=None, qemu=False):
                             SDHCI_CORE - SOC_BASE, SDHCI_CORE_SIZE)),
             ])
         )
+        arm_io_children.append(
+            node('i2c2', [
+                ph(),
+                ('compatible', cstr('op2,i2c2') + cstr('qcom,i2c-msm-v2')),
+                ('reg', u64(0xf9924000 - SOC_BASE, 0x1000)),
+            ])
+        )
 
     arm_io = node('arm-io', [
         ph(),
@@ -231,6 +239,11 @@ def build(seed=None, qemu=False):
 
     pram = node('pram', [ph(), ('reg', u64(panic_base) + u64(PANIC_LOG_SIZE))])
 
+    # Factory identity props (run102 post-mortem): real N56AP carries these as
+    # syscfg refs resolved by iBoot; OP2 has no syscfg, so ship literals.
+    # Missing serial-number made MGCopyAnswer(@"SerialNumber") return nil,
+    # crashing ndoagent (registerDefaults objects[4]) and friends in a
+    # SIGABRT loop. Values are synthetic but shape-correct.
     return node('device-tree', [
         ph(),
         ('compatible', cstr('N56AP') + cstr('iPhone7,1') + cstr('oneplus,oneplus2') + cstr('qcom,msm8994') + cstr('AppleARM')),
@@ -238,6 +251,11 @@ def build(seed=None, qemu=False):
         ('target-type', cstr('N56')),
         ('target-sub-type', cstr('N56AP')),
         ('manufacturer', cstr('Apple Inc.')),
+        ('serial-number', cstr('OP2IOS120400')),
+        ('mlb-serial-number', cstr('OP2IOS120400MLB01')),
+        ('region-info', cstr('LL')),
+        ('model-number', cstr('MGA82LL/A')),
+        ('regulatory-model-number', cstr('A1522')),
         ('#address-cells', u32(2)),
         ('#size-cells', u32(2)),
     ], [chosen, defaults, cpus, arm_io, fbcon, buttons, pram] + product + options)

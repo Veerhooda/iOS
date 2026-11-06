@@ -13,7 +13,7 @@ import zlib
 import subprocess
 
 PORT = 12345
-IMAGE_PATH = 'out/ios12-userdata.dmg'
+IMAGE_PATH = sys.argv[1] if len(sys.argv) > 1 else 'out/ios12-userdata.dmg'
 TARGET_DEV = '/dev/block/bootdevice/by-name/userdata'
 
 

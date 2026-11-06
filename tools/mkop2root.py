@@ -106,6 +106,9 @@ def tweak_launchd(root):
                     data.setdefault('EnvironmentVariables', {}).update(log_env)
                     changed = True
                     console_count += 1
+                if label == 'com.apple.backboardd':
+                    data.setdefault('EnvironmentVariables', {})['CA_BACKDROP_SCALE'] = '1'
+                    changed = True
                 if changed:
                     save_plist(fpath, data)
             except Exception:
@@ -365,10 +368,12 @@ def tweak_activation(root):
     # 8. Surgical binary patches for SpringBoard
     patch_springboard(root)
 
-    # 9. Surgical binary patches for backboardd
-    patch_backboardd(root)
-
-    # 10. Surgical patch for CoreFoundation CFRelease(NULL) in dyld shared cache
+    # 9. dyld shared cache: hunk 1 ONLY (CFRelease NULL -> ret).
+    # Run130 corrected the run99 post-mortem: hunk 1's encoding is imm19=2
+    # (target pc+8, a real early-out ret), NOT a self-loop; it is
+    # load-bearing (SpringBoard/libARI releases NULL ~22x/run, stock traps).
+    # Hunks 2 (mask real traps) and 3 (wrong dylib, corrupted Swift) stay
+    # disabled inside patch_shared_cache(). See research/cache-patch-postmortem.md.
     patch_shared_cache(root)
 
     print("  [ACTIVATION] Mobile activation state seeded as Activated across all paths (internal, mad, lockdown, system containers) and binaries patched")
@@ -406,68 +411,7 @@ def patch_mobileactivationd(root):
         safe_chmod(path, 0o755)
 
 
-def patch_backboardd(root):
-    path = os.path.join(root, 'usr/libexec/backboardd')
-    if not os.path.exists(path):
-        return
-    with open(path, 'rb') as f:
-        data = bytearray(f.read())
 
-    patched = False
-
-    # 1. 0x25740: -[BKDisplayRenderOverlay presentWithAnimationSettings:]
-    # Must be ORIGINAL: sub sp, sp, #0xc0 (ff 03 03 d1 f8 5f 08 a9)
-    # If it was patched to stub (00 00 80 52 c0 03 5f d6), restore original!
-    if data[0x25740:0x25748] == bytes.fromhex('00008052c0035fd6'):
-        data[0x25740:0x25748] = bytes.fromhex('ff0303d1f85f08a9')
-        print("  [RESTORE] backboardd: -[BKDisplayRenderOverlay presentWithAnimationSettings:] -> original")
-        patched = True
-
-    # 2. 0x4ed78: -[BKSystemApplication finishedStartup]
-    # Original: nop; ldrsw x8, 0x1000bad3c (1f 20 03 d5 08 fe 35 98)
-    # Patch to: mov w0, #1; ret (20 00 80 52 c0 03 5f d6)
-    # This informs backboardd that the system app has completed startup
-    if data[0x4ed78:0x4ed80] == bytes.fromhex('1f2003d508fe3598'):
-        data[0x4ed78:0x4ed80] = bytes.fromhex('20008052c0035fd6')
-        print("  [PATCH] backboardd: -[BKSystemApplication finishedStartup] -> return YES")
-        patched = True
-
-    # 3. 0x6bf34: -[BKBootUIPresenter _queue_addOverlay]
-    # Must be ORIGINAL: sub sp, sp, #0x60 (ff 83 01 d1)
-    if data[0x6bf34:0x6bf38] == bytes.fromhex('c0035fd6'):
-        data[0x6bf34:0x6bf38] = bytes.fromhex('ff8301d1')
-        print("  [RESTORE] backboardd: -[BKBootUIPresenter _queue_addOverlay] -> original")
-        patched = True
-
-    # 4. 0x6c12c: -[BKBootUIPresenter _queue_addUnderlay]
-    # Must be ORIGINAL: sub sp, sp, #0x60 (ff 83 01 d1)
-    if data[0x6c12c:0x6c130] == bytes.fromhex('c0035fd6'):
-        data[0x6c12c:0x6c130] = bytes.fromhex('ff8301d1')
-        print("  [RESTORE] backboardd: -[BKBootUIPresenter _queue_addUnderlay] -> original")
-        patched = True
-
-    # 5. 0x6bcf4: -[BKBootUIPresenter _queue_updateOverlay]
-    # Must be ORIGINAL: tbz w21, #0x0, 0x10006bd54 (15 03 00 36)
-    # If it was patched to b 0x10006be38 (51 00 00 14), restore original!
-    # Boot time: systemApp is nil -> finishedStartup is 0 -> tbz branches to _queue_addOverlay!
-    if data[0x6bcf4:0x6bcf8] == bytes.fromhex('51000014'):
-        data[0x6bcf4:0x6bcf8] = bytes.fromhex('15030036')
-        print("  [RESTORE] backboardd: -[BKBootUIPresenter _queue_updateOverlay] tbz -> original")
-        patched = True
-
-    # 6. 0x6bd04: -[BKBootUIPresenter _queue_updateOverlay] overlay removal
-    # Original: cbz w8, 0x10006be38 (a8 09 00 34)
-    # Patch to: b 0x10006be38 (4d 00 00 14)
-    # When finishedStartup is YES, unconditionally jump to _queue_removeOverlayWithAnimationSettings:nil
-    if data[0x6bd04:0x6bd08] == bytes.fromhex('a8090034'):
-        data[0x6bd04:0x6bd08] = bytes.fromhex('4d000014')
-        print("  [PATCH] backboardd: _queue_updateOverlay cbz -> b 0x10006be38 (unconditional removal)")
-        patched = True
-
-    if patched:
-        with open(path, 'wb') as f:
-            f.write(data)
-        safe_chmod(path, 0o755)
 
 
 def patch_springboard(root):
@@ -507,9 +451,13 @@ def patch_shared_cache(root):
     if not os.path.exists(path):
         return
     with open(path, 'r+b') as f:
-        # 1. 0xdb0d88: CFRelease NULL check
-        # Original: cbz x0, 0x180db0df0 (40 03 00 b4)
-        # Patch to: cbz x0, 0x180db0d90 (40 00 00 b4) -> branches to ret at 0x180db0d90
+        # 1. 0xdb0d88: CFRelease NULL check -> early return (KEEP: verified
+        # correct run130; the run99 "self-loop" claim misread the encoding:
+        # 0xB4000040 has imm19=2, target pc+8 = 0xdb0d90, a genuine early-out
+        # ret with nothing pushed, so NULL returns safely and balanced).
+        # Original: cbz x0 (40 03 00 b4); patched: cbz x0,+8 (40 00 00 b4).
+        # Load-bearing: SpringBoard's baseband path (libARI) releases NULL
+        # ~22x/run without a modem; stock bytes trap (SIGTRAP respawn loop).
         f.seek(0xdb0d88)
         cur = f.read(4)
         if cur == bytes.fromhex('400300b4'):
@@ -517,35 +465,38 @@ def patch_shared_cache(root):
             f.write(bytes.fromhex('400000b4'))
             print("  [PATCH] dyld_shared_cache: CFRelease(NULL) -> return safely")
 
-        # 2. 0xdb0e04: CFRelease halt trap
-        # Original: brk #1 (20 00 20 d4)
-        # Patch to: ret (c0 03 5f d6)
-        f.seek(0xdb0e04)
-        cur = f.read(4)
-        if cur == bytes.fromhex('200020d4'):
-            f.seek(0xdb0e04)
-            f.write(bytes.fromhex('c0035fd6'))
-            print("  [PATCH] dyld_shared_cache: CFRelease trap -> ret")
+        # 2. 0xdb0e04: CFRelease halt trap (brk #1). DISABLED: hunk 1 already
+        # returns NULL early, so this trap is only reachable by non-NULL
+        # misuse, which must stay visible. Stock bytes kept.
+        # (was: brk #1 200020d4 -> ret c0035fd6)
 
-        # 3. 0x2ee0d714: -[MPAVEndpointRoutingDataSource setRoutingContextUID:] nil assertion
-        # Original: cbz x21, 0x1aee0db04 (95 1f 00 b4) -> throws NSInternalInconsistencyException
-        # Patch to: cbz x21, 0x1aee0dc10 (f5 27 00 b4) -> returns cleanly via function epilogue
-        f.seek(0x2ee0d714)
-        cur = f.read(4)
-        if cur == bytes.fromhex('951f00b4'):
-            f.seek(0x2ee0d714)
-            f.write(bytes.fromhex('f52700b4'))
-            print("  [PATCH] dyld_shared_cache: setRoutingContextUID:(nil) -> return safely")
+        # 3. 0x2ee0d714: DISABLED (proven wrong run99): fileoff lands in
+        # libswiftFoundation, ~200MB from MediaPlayer; the cbz retarget
+        # corrupted Swift code. Stock bytes kept.
+        # (was: 951f00b4 -> f52700b4)
 
 
 def tweak_graphics(root):
-    # Disable Apple GPU bundles without real A8 GPU
+    # Keep Apple GPU bundles INTACT (do NOT rename to .disabled).
+    #
+    # Rationale (research/quartzcore-simcrash.md): ios-sweet leaves GPU bundles
+    # untouched and its CoreAnimation falls back to CPU rendering all the way to
+    # the home screen. Renaming AGXGLDriver/AGXMetalA8 was an OP2-only divergence
+    # introduced to "force software rendering", but iOS 12 QuartzCore probes GPU
+    # state during render-server init (IOKit AGXAccelerator matching + driver
+    # bundle probing; see the 0x1852fff98 check gating "Software renderer!
+    # Simulating crash!"), and missing bundles take a harsher path than
+    # present-but-driverless bundles. Without a kernel accelerator the bundles
+    # are inert, exactly as on sweet.
     ext_dir = os.path.join(root, 'System/Library/Extensions')
     for b in ['AGXGLDriver.bundle', 'AGXMetalA8.bundle']:
         p = os.path.join(ext_dir, b)
-        if os.path.exists(p):
-            shutil.move(p, p + '.disabled')
-            print(f"  [GPU] {b} disabled (forces software rendering)")
+        if os.path.exists(p + '.disabled') and not os.path.exists(p):
+            # Self-heal roots tweaked by older runs (--apply mode is incremental).
+            shutil.move(p + '.disabled', p)
+            print(f"  [GPU] {b} restored (present-but-driverless, matches ios-sweet)")
+        elif os.path.exists(p):
+            print(f"  [GPU] {b} kept intact (software fallback handled by CoreAnimation)")
 
 
 def tweak_timezone(root):
@@ -567,6 +518,105 @@ def tweak_fstab(root):
         print("  [FSTAB] /dev/disk0s1 set to rw,noatime in /etc/fstab")
 
 
+def tweak_medialibrary(root):
+    # Seed an empty ML database so itunescloudd doesn't SIGABRT.
+    # Root cause (run105-era tracev3, boot slide 0x1B9EC000): CloudServer -_init
+    # -> HSCloudClientGetPreferredVideoQuality
+    # -> [[ML3MusicLibrary sharedLibrary] valueForDatabaseProperty:
+    #      @"MLCloudDatabasePreferredVideoQuality"]
+    # -> sqlite open ENOENT -> NSGenericException (errno=2) -> SIGABRT ×10-19/run.
+    # The only query on this path is
+    #   SELECT value FROM _MLDatabaseProperties WHERE key = ?
+    # and the caller defaults to -1 on nil, so an EMPTY table with the right
+    # name fully unblocks it. A fresh DB is exactly what first-boot
+    # medialibraryd creates anyway (it migrates/creates remaining tables).
+    itunes_dir = os.path.join(root, 'private/var/mobile/Media/iTunes_Control/iTunes')
+    os.makedirs(itunes_dir, exist_ok=True)
+    safe_chown(os.path.join(root, 'private/var/mobile/Media/iTunes_Control'),
+               MOBILE_UID, MOBILE_GID)
+    safe_chown(itunes_dir, MOBILE_UID, MOBILE_GID)
+    safe_chmod(itunes_dir, 0o755)
+    db = os.path.join(itunes_dir, 'MediaLibrary.sqlitedb')
+    # Always (re)connect: CREATE TABLE IF NOT EXISTS upgrades older seeds.
+    con = sqlite3.connect(db)
+    con.execute('CREATE TABLE IF NOT EXISTS _MLDatabaseProperties'
+                ' (key TEXT PRIMARY KEY, value BLOB)')
+    # Iteration 2 (run109 tracev3): the CloudServer worker also runs
+    #   SELECT 1 FROM item JOIN item_store USING (item_pid)
+    #   WHERE in_my_library AND cloud_status = ? LIMIT 1
+    # which NSInternalInconsistency-aborts on "no such table". Seed
+    # minimal shells (empty -> 0 rows -> normal "no match" path).
+    # item_store uses the real iOS 12 schema + cloud_status (added by a
+    # later migration ALTER); item is minimal (base CREATE is dynamic).
+    con.execute('CREATE TABLE IF NOT EXISTS item'
+                ' (item_pid INTEGER PRIMARY KEY, in_my_library INTEGER)')
+    con.execute('CREATE TABLE IF NOT EXISTS item_store'
+                ' (item_pid INTEGER PRIMARY KEY,'
+                ' store_item_id INTEGER NOT NULL DEFAULT 0,'
+                ' store_artist_id INTEGER NOT NULL DEFAULT 0,'
+                ' store_composer_id INTEGER NOT NULL DEFAULT 0,'
+                ' store_genre_id INTEGER NOT NULL DEFAULT 0,'
+                ' store_playlist_id INTEGER NOT NULL DEFAULT 0,'
+                ' storefront_id INTEGER NOT NULL DEFAULT 0,'
+                ' redownload_action_params TEXT,'
+                ' store_saga_id INTEGER NOT NULL DEFAULT 0,'
+                ' purchase_history_id INTEGER NOT NULL DEFAULT 0,'
+                ' purchase_history_token INTEGER NOT NULL DEFAULT 0,'
+                ' is_ota_purchased INTEGER NOT NULL DEFAULT 0,'
+                ' store_kind INTEGER NOT NULL DEFAULT 0,'
+                ' account_id INTEGER NOT NULL DEFAULT 0,'
+                ' key_versions INTEGER NOT NULL DEFAULT 0,'
+                ' key_platform_id INTEGER NOT NULL DEFAULT 0,'
+                ' key_id INTEGER NOT NULL DEFAULT 0,'
+                ' key_id_2 INTEGER NOT NULL DEFAULT 0,'
+                ' date_purchased INTEGER NOT NULL DEFAULT 0,'
+                ' date_released INTEGER NOT NULL DEFAULT 0,'
+                ' external_guid TEXT, feed_url TEXT, artwork_url TEXT,'
+                ' store_xid TEXT, store_flavor TEXT,'
+                ' store_matched_status INTEGER NOT NULL DEFAULT 0,'
+                ' store_redownloaded_status INTEGER NOT NULL DEFAULT 0,'
+                ' cloud_status INTEGER NOT NULL DEFAULT 0)')
+    con.commit()
+    con.close()
+    print("  [MEDIALIB] seeded empty MediaLibrary.sqlitedb"
+          " (_MLDatabaseProperties+item+item_store)")
+    safe_chown(db, MOBILE_UID, MOBILE_GID)
+    safe_chmod(db, 0o644)
+    for suffix in ('-wal', '-shm', '-journal'):
+        stale = db + suffix
+        if os.path.exists(stale):
+            os.remove(stale)
+
+
+# Modules whose instantiation SIGABRTs on audio-less hardware. Each entry:
+# bundle id removed from ControlCenterServices' ModuleWhitelist.plist.
+# - nowplaying (run109 tracev3): MediaControlsModule -init calls
+#   MRAVOutputContextGetSharedAudioPresentationContext() -> nil (no audio
+#   routes) -> setRoutingContextUID:nil -> MPAVEndpointRoutingDataSource
+#   NSAssert("Invalid parameter") -> SB SIGABRT 4x/run. iOS tolerates
+#   missing modules (user-removable); the CC simply shows one fewer tile.
+CC_MODULE_DENYLIST = (
+    'com.apple.mediaremote.controlcenter.nowplaying',
+)
+
+
+def tweak_controlcenter(root):
+    wl = os.path.join(root, 'System/Library/PrivateFrameworks/'
+                            'ControlCenterServices.framework/ModuleWhitelist.plist')
+    if not os.path.exists(wl):
+        print("  [CC] ModuleWhitelist.plist missing, skipping")
+        return
+    with open(wl, 'rb') as f:
+        ids = plistlib.load(f)
+    kept = [i for i in ids if i not in CC_MODULE_DENYLIST]
+    if len(kept) == len(ids):
+        return
+    with open(wl, 'wb') as f:
+        plistlib.dump(kept, f)
+    print(f"  [CC] removed {len(ids) - len(kept)} module(s) from whitelist:"
+          f" {[i for i in ids if i not in kept]}")
+
+
 def apply_tweaks(root):
     print("[TWEAKS] Applying iOS 12.5.7 system bring-up tweaks...")
     tweak_launchd(root)
@@ -577,6 +627,8 @@ def apply_tweaks(root):
     tweak_graphics(root)
     tweak_timezone(root)
     tweak_fstab(root)
+    tweak_medialibrary(root)
+    tweak_controlcenter(root)
     tweak_migrators(root)
     tweak_activation(root)
 
@@ -636,10 +688,10 @@ def apply_tweaks(root):
             'SilentICDPUpgrade'
         )
     })
-    # Configure backboardd to allow boot UI overlay presentation and disable watchdog kills
+    # Configure backboardd to hide boot UI overlay and disable watchdog kills
     backboardd_dict = {
-        'BKHideAppleLogoOnLaunch': False,
-        'hideAppleLogoOnLaunch': False,
+        'BKHideAppleLogoOnLaunch': True,
+        'hideAppleLogoOnLaunch': True,
         'BKNoWatchdogs': True,
         'BKEnableStevenoteRotation': False,
         'BKDisableCloneMirroring': False,

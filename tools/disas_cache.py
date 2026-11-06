@@ -1,6 +1,7 @@
-import sys, struct, subprocess
+import os, sys, struct, subprocess
 
-CACHE_PATH = "/Volumes/iOSRoot/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64"
+CACHE_PATH = os.environ.get("OP2_DYLD_CACHE",
+    "/tmp/fixaro/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64")
 
 def make_macho(code, va):
     magic = 0xfeedfacf

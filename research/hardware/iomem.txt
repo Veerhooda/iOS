@@ -1,0 +1,44 @@
+00000000-062fffff : System RAM
+  00080000-013d4a63 : Kernel code
+  01445000-018999f7 : Kernel data
+10200000-f7ffffff : System RAM
+f9017000-f9017fff : msm-watchdog
+f9109000-f910dfff : /soc/cci@f9100000/pmu@a000
+f920c100-f92fbfff : f9200000.dwc3
+f9824900-f9824a9f : mmc0
+f9904000-f991cfff : /soc/qcom,sps-dma@f9904000
+f9923000-f9923fff : spi_qsd
+f9924000-f9924fff : f9924000.i2c
+f9928000-f9928fff : f9928000.i2c
+f9967000-f9967fff : f9967000.i2c
+f9968000-f9968fff : spi_qsd
+f9b38000-f9b387ff : qmp_phy_base
+f9b39000-f9b3917e : qusb_phy_base
+f9b3e000-f9b3e3fe : qmp_ahb2phy_base
+fc401680-fc401683 : restart_reg
+fc4281d0-fc4291cf : vmpm
+fc4a8000-fc4a9fff : tsens_physical
+fc4ab000-fc4ab003 : /soc/restart@fc4ab000
+fc4bc000-fc4bcfff : tsens_eeprom_physical
+fc597000-fc597da7 : phy_mem
+fc820000-fc82001f : rmb_base
+fc880000-fc8800ff : qdsp6_base
+fd860000-fd860fff : fd_vbif
+fd878000-fd8787ff : fd_core
+fd87c000-fd87c7ff : fd_misc
+fda00020-fda0002f : csi_clk_mux
+fda00030-fda00033 : csiphy_clk_mux
+fda00038-fda0003b : csiphy_clk_mux
+fda00040-fda00043 : csiphy_clk_mux
+fda04000-fda040ff : fda04000.qcom,cpp
+fda08000-fda083ff : fda08000.qcom,csid
+fda08400-fda087ff : fda08400.qcom,csid
+fda08800-fda08bff : fda08800.qcom,csid
+fda08c00-fda08cff : fda08c00.qcom,csid
+fda0a000-fda0a4ff : fda0a000.qcom,ispif
+fda0ac00-fda0adff : fda0ac00.qcom,csiphy
+fda0b000-fda0b1ff : fda0b000.qcom,csiphy
+fda0b400-fda0b5ff : fda0b400.qcom,csiphy
+fda0c000-fda0cfff : fda0c000.qcom,cci
+fdb00000-fdb3ffff : kgsl-3d0
+fec00000-fedfffff : fdd00000.qcom,ocmem
