@@ -1,121 +1,141 @@
 # iOS on OnePlus 2
 
-Real **Apple iOS 12.5.7 running on a OnePlus 2** (`ONE A2003`, Snapdragon
-810 / MSM8994): XNU with a custom MSM8994 board port, real HFS+ root from
-eMMC, launchd, SpringBoard, touch, and a working display pipeline —
-including user-verified AssistiveTouch and home-screen interaction.
+Real **Apple iOS 12.5.7 running on a OnePlus 2** (`ONE A2003`, Qualcomm Snapdragon 810 / MSM8994): custom XNU kernel port with dual-core SMP (`cpus=2`), real HFS+ root from eMMC 5.0, launchd, SpringBoard, Synaptics touch, dedicated Consumer HID button delivery, and a continuous display pipeline — verified with AssistiveTouch and permanent home-screen illumination.
 
-Method inspired by [dipa-studio/ios-sweet](https://github.com/dipa-studio/ios-sweet)
-(Redmi Note 10 Pro), re-engineered for MSM8994: GICv2 instead of GICv3, 4K
-pages (iPhone 6 / 4K-native generation), eMMC instead of UFS, and Qualcomm
-Little Kernel `boot.img v0` instead of a custom loader.
+Method inspired by [dipa-studio/ios-sweet](https://github.com/dipa-studio/ios-sweet) (Redmi Note 10 Pro), re-engineered from the ground up for MSM8994: GICv2 MMIO interrupt controller instead of GICv3 system registers, native 4K pages (`ARM_PGSHIFT=12`), Qualcomm SDHCI eMMC with CMD12 abort/retry instead of UFS, and Qualcomm Little Kernel (LK) `boot.img v0` bare-metal boot shim.
 
-**Status (2026-11-06): it runs.** Latest 2h validation: 36,250 display
-presents, 10 compositor surfaces, lit panel, SpringBoard + backboardd alive
-from boot, 2.59M eMMC reads with zero failures, no crashing daemons — plus
-hands-on confirmation (AssistiveTouch on, home screen usable, occasional
-app crashes). Full evidence: [docs/STATUS.md](docs/STATUS.md).
+**Status (2026-11-08): Dual-core SMP & Permanent Display Verified.**
+* **Dual-Core SMP (`cpus=2`):** Cortex-A53 CPU 0 + CPU 1 online via hardware mailbox and PSCI `CPU_ON`, stable over 30-minute soak runs with 0 eMMC errors and clean deadline resets. Boot time cut to ~5–6 minutes.
+* **Display Continuity (Milestone 9):** 100% panel memory illumination (`panel_nz = 2000/2000`) across full 30-minute runs. Zero-fill frame preservation prevents `backboardd` from blanking the physical panel. Dynamic userland surface progression (Surfaces 2, 9, 12, 15, 18, 21) rendered on CPU and downsampled from 1242×2208 Retina to 1080×1920.
+* **Home Button & Input:** Dedicated `OP2Buttons` Consumer HID service with direct SpringBoard Mach notification port binding. Simulated AUTOHOME and capacitive touch events actively wake and control SpringBoard.
+* **Jetsam Protection:** 256MB task memory limit floor protects `assistivetouchd` and essential daemons from fatal out-of-memory kills on 4GB physical DRAM.
+
+Full milestone evidence: [docs/STATUS.md](docs/STATUS.md) and [docs/milestone-9-physical-display-zero-fill-verified.md](docs/milestone-9-physical-display-zero-fill-verified.md).
+
+---
 
 ## Quickstart
 
-Prerequisites: macOS host, Xcode 10.3 toolchain, Homebrew LLVM, `adb` /
-`fastboot`, a OnePlus 2 in TWRP (partitions backed up), and a prepared
-iOS 12.5.7 userdata image.
+### Prerequisites
+* macOS host with Xcode 10.3 toolchain and Homebrew LLVM (`clang`, `ld.lld`, `llvm-objcopy`).
+* Android platform tools (`adb`, `fastboot`).
+* OnePlus 2 (`ONE A2003`) in TWRP Recovery with raw partitions backed up.
+* Prepared iOS 12.5.7 (`16H81`, `n56ap` iPhone 6 Plus) userdata disk image (`out/ios12-userdata-fixA.dmg`).
 
 ```bash
-# 1. Kernel (incremental; ~2-10 min)
+# 1. Compile XNU kernel (incremental build: ~1-3 minutes)
 ./tools/build-xnu.sh
-cp xnu/xnu-4903.270.47/BUILD/obj/kernel.development.msm8994 \
+cp xnu/xnu-4903.270.47/BUILD/obj/DEVELOPMENT_ARM64_MSM8994/kernel.development.msm8994 \
    out/kernel.development.msm8994
 
-# 2. Device tree + payload + boot image (both flags required)
+# 2. Build Apple Device Tree (ADT) with dual-core SMP support
 python3 tools/mkadt.py out/op2.adt
-python3 tools/mkpayload.py out/kernel.development.msm8994 out/op2.adt \
-    out/op2-hardware-payload.bin --cmdline "<cmdline below>"
-python3 shim/build.py --payload out/op2-hardware-payload.bin \
-    --output out/xnu-boot.img
 
-# 3. Flash userdata (device in TWRP/recovery, adb up)
-python3 tools/flash_userdata.py out/ios12-userdata-fixA.dmg
+# 3. Pack payload and generate boot image
+B="-v debug=0x10014e serial=3 cpus=2 keepsyms=1 op2_deadline=1800 \
+rd=emmcroot0 emmcroot=userdata rootrw=1 emmcrw=1 cs_enforcement_disable=1 \
+unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 op2fb_client_ui=1 \
+op2_tapms=30000 op2_userlog=0 op2fb_keepon=1"
 
-# 4. Boot; it auto-resets to recovery at op2_deadline
-adb reboot bootloader; sleep 12
-fastboot boot out/xnu-boot.img
+python3 tools/mkpayload.py out/kernel.development.msm8994 out/op2.adt /tmp/plB25.bin --cmdline "$B"
+python3 shim/build.py --payload /tmp/plB25.bin --output /tmp/smpB25.img
 
-# 5. Pull the verdict (260 KB persistent ramoops ring)
+# 4. Boot via fastboot (device automatically resets to TWRP at op2_deadline)
+adb reboot bootloader
+sleep 12
+fastboot boot /tmp/smpB25.img
+
+# 5. Retrieve full persistent kernel log upon recovery reset
 adb pull /sys/fs/pstore/console-ramoops-0 logs/runNNN_ramoops.txt
 ```
 
-Reference cmdline (≤250 chars; always verify the bytes in the image):
+---
 
-```text
--v debug=0x10014e serial=3 cpus=1 keepsyms=1 op2_deadline=7200
-rd=emmcroot0 emmcroot=userdata rootrw=1 emmcrw=1 cs_enforcement_disable=1
-unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 op2fb_client_ui=1
-op2_tapms=30000 op2_userlog=0
+## Technical Architecture
+
+```mermaid
+flowchart TD
+    subgraph Boot ["Stage 1: Boot & Hand-off"]
+        A["Qualcomm Little Kernel (aboot)"] -->|"boot.img v0 (PA 0x00080000)"| B["Bare-Metal Shim (shim/start.S)"]
+        B -->|"Unpack OP2XNU01 Payload"| C["Relocate Segments to DRAM (PA 0x10200000)"]
+        C -->|"Inject ADT & boot_args"| D["Jump to XNU Entry (osfmk/arm64/start.s)"]
+    end
+
+    subgraph Kernel ["Stage 2: XNU MSM8994 Kernel"]
+        D --> E["arm_vm_init (4KB Pages, 3-Level PT)"]
+        E --> F["GICv2 Interrupts & 19.2MHz Generic Timer"]
+        F --> G["Secondary Core Bring-Up (CPU 1 via PSCI CPU_ON)"]
+        G --> H["SDHCI eMMC Driver (bsd/dev/op2_emmc.c)"]
+        H --> I["Mount HFS+ /dev/disk0s2 on / (Userdata Root)"]
+    end
+
+    subgraph Userland ["Stage 3: iOS 12.5.7 Userland"]
+        I --> J["launchd (PID 1)"]
+        J --> K["backboardd (PID 45) & SpringBoard (PID 41)"]
+        K --> L["assistivetouchd (PID 156)"]
+    end
+
+    subgraph Display ["Stage 4: Display & Input Engine"]
+        K -->|"Render 1242x2208 Retina"| M["Client Surfaces (Surfaces 2..21)"]
+        M -->|"fClientUI Downsample (1080x1920)"| N["Physical Framebuffer (fPixels)"]
+        N -->|"Zero-Fill Protection (Preserve Frame)"| O["MDSS MDP5 Command-Mode Panel"]
+        P["Synaptics S3320 Touch & OP2Buttons HID"] -->|"Mach Notification Port"| K
+    end
 ```
 
-Notes that will save you hours:
+---
 
-- Give it time: boot-to-UI takes 30–80 min on one core. A 20-minute
-  deadline kills the boot mid-way and looks exactly like a hang.
-- `python3 shim/build.py` with no flags silently builds a *stale* image
-  (default ramdisk + `out/shim-boot.img`). Always pass both flags.
-- `op2_tapms` enables synthetic taps plus periodic HOME and swipe-up, so
-  wake/unlock happen with nobody watching.
-- Bake userdata variants by mounting a DMG copy RW on macOS, applying
-  `tools/hunk*.py`, parking daemons under `LaunchDaemons.disabled/`.
+## Key Engineering Breakthroughs
 
-## How it works
+1. **Dual-Core SMP on Snapdragon 810:**
+   * Secondary Cortex-A53 core (CPU 1) initialized through hardware mailbox handoff and PSCI `CPU_ON`.
+   * Cross-core TLB shootdowns, inter-processor interrupts (IPI via GICv2 SGI), and dual-thread scheduling operational.
+2. **Permanent Physical Illumination & Zero-Fill Guard (Milestone 9):**
+   * **Alpha Masking Fix:** Evaluates `(row[x] & 0x00FFFFFF) != 0` to distinguish opaque black compositor frames (`0xFF000000`) from true UI graphics.
+   * **Frame Freeze:** When `backboardd` submits blank composite swaps, `AppleCLCD::present` freezes the existing non-zero display memory, preserving active UI on-screen and achieving `panel_nz = 2000/2000` (100% lit UI).
+   * **Dynamic Surface Routing:** Scans userland surfaces up to ID 63, automatically downsampling SpringBoard's double-buffered Retina frames (1242×2208) to native 1080×1920 BGR888 panel memory.
+3. **Dedicated `OP2Buttons` HID Service:**
+   * Bypasses the limitation where `backboardd` refused keyboard-typed button events from digitizers.
+   * Declares Consumer/ConsumerControl (Page `0x0C`, Usage `0x40`), registering directly with `SpringBoard`'s Mach runloop.
+4. **256MB Jetsam Limit Floor:**
+   * Overrides legacy 1GB iPhone 6 memory profiles in `osfmk/kern/task.c`. Prevents `memorystatus` from terminating `assistivetouchd` under 36MB limits while 1.8+ GB of RAM is completely free.
+5. **Storage Subsystem Hardening:**
+   * Custom SDHCI driver with CMD12 abort handling, DAT0 line polling, and automatic 3x retries on CRC/timeout faults, yielding zero read/write failures across millions of blocks.
 
-LK boots the shim → the shim loads the XNU payload → XNU (MSM8994 board:
-GICv2, 19.2 MHz timer, SDHCI eMMC, S3320 I2C digitizer, MDSS framebuffer)
-mounts the HFS+ root → launchd → SpringBoard/backboardd render to the
-panel. No GPU (Metal returns NULL; guarded per call-site by cache patches
-called *hunks*), no SMP yet (`cpus=1`), sleep vetoed hakios-style because
-a slept panel never wakes. Every run self-resets on schedule and leaves a
-ramoops ring with a per-minute display timeline, eMMC stats + fail ring,
-process exit ring with user stacks, and thread snapshots.
+---
 
-Key engineering wins: CoreVideo NULL-dict guard that stopped the SB min38
-crash (`hunkCV`), eMMC abort+retry that took failures to zero, MobileAsset
-XPC hang diagnosis via symbolicated SpringBoard stacks, and the
-lskdd/mobileassetd daemon triage. Details in `research/` and
-[docs/STATUS.md](docs/STATUS.md).
+## Repository Structure
 
-## Repository layout
+- [`tools/`](file:///Users/veerhooda/oneplus2/tools/) — Build, packaging, payload, flash, and analysis utilities:
+  * `mkadt.py` — Generates Apple Device Tree with dual-core SMP nodes.
+  * `mkpayload.py` — Compiles XNU Mach-O segments and ADT into `OP2XNU01` payloads.
+  * `hunkMA.py` & `hunkMA2.py` — MobileAsset synchronous query fail-fast stubs.
+  * `op2hfs.py` — Raw in-place HFS+/HFSX reader/writer for on-device userdata inspection.
+- [`shim/`](file:///Users/veerhooda/oneplus2/shim/) — Bare-metal ARM64 Little Kernel boot shim and FDT parser.
+- [`docs/`](file:///Users/veerhooda/oneplus2/docs/) — Technical milestone verifications, architecture docs, and boot references:
+  * [`docs/STATUS.md`](file:///Users/veerhooda/oneplus2/docs/STATUS.md) — Comprehensive project status, run history, and verification matrix.
+  * [`docs/milestone-9-physical-display-zero-fill-verified.md`](file:///Users/veerhooda/oneplus2/docs/milestone-9-physical-display-zero-fill-verified.md) — Milestone 9 display continuity verification.
+  * [`docs/HOW-IT-BOOTS.md`](file:///Users/veerhooda/oneplus2/docs/HOW-IT-BOOTS.md) — Detailed 11-stage boot sequence reference.
+  * [`docs/OP2_KERNEL_CHANGES.md`](file:///Users/veerhooda/oneplus2/docs/OP2_KERNEL_CHANGES.md) — Index of MSM8994 XNU kernel source modifications.
+  * [`docs/HACKS.md`](file:///Users/veerhooda/oneplus2/docs/HACKS.md) — Shims, workarounds, and technical debt tracking.
+- [`research/`](file:///Users/veerhooda/oneplus2/research/) — Deep-dive postmortems, symbolication traces, and crash investigations.
+- [`History/`](file:///Users/veerhooda/oneplus2/History/) — Session handoffs, trajectory logs, and milestone artifacts.
+- [`xnu/`](file:///Users/veerhooda/oneplus2/xnu/xnu-4903.270.47/) — Nested XNU repository (branch `msm8994`).
 
-- `tools/` — build, pack, flash, and analysis scripts (hunks, slide +
-  symbolication pipeline, cache disassembler/extractor, run census).
-- `shim/` — bare-metal ARM64 Little Kernel shim.
-- `docs/` — status, boot flow, kernel-change index, milestones, restore.
-- `research/` — design notes, postmortems, bring-up plans.
-- `NOTES.md` — Day-0…M6 hardware and bring-up log.
-- `xnu/` — XNU source tree (local only, see below).
-
-The kernel tree (`xnu/xnu-4903.270.47`, branch `msm8994`) lives next to
-this checkout and is indexed in
-[docs/OP2_KERNEL_CHANGES.md](docs/OP2_KERNEL_CHANGES.md). Build outputs,
-disk images, logs, and device dumps stay out of git.
-
-## Docs
-
-- [docs/STATUS.md](docs/STATUS.md) — current state, proof, issues, roadmap
-- [docs/OP2_KERNEL_CHANGES.md](docs/OP2_KERNEL_CHANGES.md) — kernel index
-- [docs/HOW-IT-BOOTS.md](docs/HOW-IT-BOOTS.md) — boot flow reference
-- [docs/HACKS.md](docs/HACKS.md) · [docs/CREDITS.md](docs/CREDITS.md) ·
-  [docs/RESTORE.md](docs/RESTORE.md) — workarounds, credits, unbrick
-- [NOTES.md](NOTES.md) — hardware facts and early bring-up log
+---
 
 ## Roadmap
 
-Eyes validation of lockscreen-vs-home → AssistiveTouch/Home polish →
-8h stability soak → SMP bring-up → speed (codesign fast path, trim) →
-app-render hardening.
+1. **Four-Core Little Cluster Scaling:** Bring online CPU 2 and CPU 3 via mailbox spin-table for full 4-core Cortex-A53 scheduling.
+2. **App-Render Hardening:** Apply targeted cache hunks for apps triggering CoreAnimation/Metal null assertions (Photos, Camera, Safari).
+3. **Hardware Touchscreen Tuning:** Tune Synaptics S3320 interrupt-driven reporting for zero-latency direct screen interaction.
+4. **PMIC RTC Real-Time Clock:** Map Qualcomm PM8994 SPMI RTC to provide real wall-clock timestamps to iOS userland.
 
-## Credits
+---
 
-[dipa-studio/ios-sweet](https://github.com/dipa-studio/ios-sweet) (method),
-[oosexgang/hakios-xnu-kernel](https://github.com/oosexgang/hakios-xnu-kernel)
-(sleep gate + framebuffer lessons), Apple OSS XNU, checkra1n/pongoOS
-research. Full list: [docs/CREDITS.md](docs/CREDITS.md).
+## Credits & Acknowledgments
+
+* **[dipa-studio/ios-sweet](https://github.com/dipa-studio/ios-sweet)** — Groundbreaking iOS porting methodology on Snapdragon.
+* **[oosexgang/hakios-xnu-kernel](https://github.com/oosexgang/hakios-xnu-kernel)** — Power management, sleep gate, and framebuffer insights.
+* **Apple Open Source** — XNU kernel source releases (`xnu-4903.270.47`, Darwin 18.7.0).
+* **checkra1n & pongoOS** — Bare-metal ARM64 bootstrap and XNU hardware patching research.

@@ -30,8 +30,16 @@ Queried via `/sys/class/graphics/fb0/`, dmesg, and `live.dts`:
 * **Continuous Splash Physical Base**: **`0x03401000`** (node: `cont_splash_mem@0`, size: `0x2200000` = 34 MB)
 * **Panel Resolution**: **1080 × 1920** (16:9 aspect ratio)
 * **Virtual Size**: `1080, 3840` (double-buffered)
-* **Pixel Format**: 32-bit ARGB/RGBA (`bits_per_pixel = 32`)
+* **Pixel Format**: 32-bit ARGB/RGBA/BGRA (`bits_per_pixel = 32`)
 * **Row Stride**: **`4352` bytes** (`1080 * 4 = 4320`, padded to 4352 bytes / 1088 words for 128-byte hardware alignment)
+* **Dynamic Surface Routing & Downsampling (Milestone 8/9)**:
+  * Automatically inspects userland compositing surfaces up to ID 63.
+  * Dynamically detects active SpringBoard surface transitions (Surfaces 2, 9, 12, 15, 18, 21).
+  * Performs software bilinear downsampling from 1242×2208 Retina UI to native 1080×1920.
+* **RGB Alpha Masking & Zero-Fill Preservation (Milestone 9)**:
+  * Masks evaluation with `(row[x] & 0x00FFFFFF) != 0` to distinguish opaque black (`0xFF000000`) from empty surfaces.
+  * When `backboardd` issues blank composite swap commands, `AppleCLCD::present` freezes physical panel memory (`fPixels`).
+  * Yields 100% illumination continuity (`panel_nz = 2000/2000`) over 30-minute soaks.
 
 ### 3. Interrupt Controller (GICv2)
 Confirmed via `interrupt-controller@f9000000`:
@@ -43,17 +51,22 @@ Confirmed via `interrupt-controller@f9000000`:
 ### 4. CPU Topology & Bring-Up Method
 Confirmed via `cpus` node in `live.dts`:
 * **Cluster 0 (LITTLE)**:
-  * `cpu@0`: ARM Cortex-A53 (MPIDR/reg `0x00`) - **Boot Core**
-  * `cpu@1`: ARM Cortex-A53 (MPIDR/reg `0x01`)
-  * `cpu@2`: ARM Cortex-A53 (MPIDR/reg `0x02`)
-  * `cpu@3`: ARM Cortex-A53 (MPIDR/reg `0x03`)
+  * `cpu@0`: ARM Cortex-A53 (MPIDR/reg `0x00`) - **Boot Core (Active)**
+  * `cpu@1`: ARM Cortex-A53 (MPIDR/reg `0x01`) - **Secondary Core (Active, Milestone 9)**
+  * `cpu@2`: ARM Cortex-A53 (MPIDR/reg `0x02`) - Available for 4-core scaling
+  * `cpu@3`: ARM Cortex-A53 (MPIDR/reg `0x03`) - Available for 4-core scaling
 * **Cluster 1 (big)**:
   * `cpu@4`: ARM Cortex-A57 (MPIDR/reg `0x100`)
   * `cpu@5`: ARM Cortex-A57 (MPIDR/reg `0x101`)
   * `cpu@6`: ARM Cortex-A57 (MPIDR/reg `0x102`)
   * `cpu@7`: ARM Cortex-A57 (MPIDR/reg `0x103`)
 * **Enable Method**: `"qcom,8994-arm-cortex-acc"`
-* **PSCI**: **None** (no PSCI node in DTB; secondary core boot uses Qualcomm ACC / APCS and SCM boot-address registers).
+* **SMP Bring-Up (Milestone 9 Verified)**:
+  * Dual-core SMP (`cpus=2`) operational on CPU 0 + CPU 1.
+  * Secondary core released via ARM PSCI SMC call `CPU_ON` (`0xC4000003`) targeting CPU 1 MPIDR (`0x0001`) with entry point `arm_init_secondary` in `start.s`.
+  * Mailbox spin-table status synchronization handled via uncached memory addresses `0x00080000` and `0x00080008`.
+  * Preemptive Mach scheduling, cross-core TLB shootdowns, and inter-processor interrupts (IPI via GICv2 SGI 0) fully operational.
+  * Cuts time-to-SpringBoard from 30–80 minutes down to ~5–6 minutes.
 
 ### 5. Architected Timer
 Confirmed via `timer` node in `live.dts`:
@@ -75,6 +88,17 @@ Confirmed via `/sys/class/mmc_host/mmc0` and `sdhci@f9824900`:
   * `hc_irq`: SPI 123 (INTID `32 + 123 = 155`)
   * `pwr_irq`: SPI 138 (INTID `32 + 138 = 170`)
 * **Storage Medium**: 64 GB eMMC 5.0 (`mmcblk0`)
+* **Driver Architecture (`bsd/dev/op2_emmc.c`)**:
+  * Polled Darwin `bdevsw` and `cdevsw` driver.
+  * Robust error recovery with hardware CMD12 abort handling, DAT0 line polling, and 3x retries on CRC or timeout faults.
+  * Verified rock-solid with 0 failures across 1,360,000+ operations in prolonged soak runs.
+
+### 7. Input Subsystem & Buttons
+* **Touchscreen Digitizer**: Synaptics S3320 on I2C bus 4 (`0x20`), 1080×1920 coordinate reporting with multi-touch support.
+* **Dedicated Buttons Service (`OP2Buttons`)**:
+  * Standalone IOHIDEventService registering Consumer/ConsumerControl (Page `0x0C`, Usage `0x40`).
+  * Direct Mach notification port binding to `SpringBoard`'s runloop.
+  * Dispatches simulated AUTOHOME (`op2_tapms`) and physical capacitive sensor events to wake the screen and return to the home screen.
 
 ---
 
@@ -397,6 +421,55 @@ Modeled after Apple's clean `BCM2837` (Raspberry Pi 3) implementation, avoiding 
   5. Security daemon `keybagd` (`/usr/libexec/keybagd`) connected to `AppleKeyStore`, queried selector 14 (`aks_get_system`), received handle 0, queried lock state (0x4, unlocked), and initialized MobileKeyBag (`MKB_INIT`) successfully.
   6. Launchd launched early daemons (`xpcroleaccountd`, `fud`, `tzinit`, `FinishRestoreFromBackup`, `sysstatuscheck`) and transitioned to full LaunchDaemons bootstrap, spawning over 42 concurrent processes (including `xpcproxy` trampolines for `mDNSResponder`, `cfprefsd`, etc.).
   7. System executed concurrently with 40+ kernel threads for the full 50-second test window with zero kernel panics or crashes, resetting cleanly to TWRP recovery via autonomous timer deadline (`op2_deadline=50`).
+
+---
+
+## Milestone 7: Digitizer & Interactive SpringBoard Verification
+- **Hardware Target**: Physical OnePlus 2 (`ONE A2003`, Snapdragon 810 / MSM8994).
+- **Touch Controller**: Synaptics S3320 mapped over Qualcomm I2C bus 4 (`0x20`).
+- **Core Results & Breakthroughs**:
+  1. `OP2Digitizer.cpp` and `OP2I2C.cpp` initialize the S3320 touch controller directly from XNU IOKit.
+  2. Multi-touch coordinate reporting (1080×1920) active; `backboardd` receives and processes touch reports.
+  3. AssistiveTouch daemon (`assistivetouchd`) spawned by `launchd` and active in userland.
+  4. Synthetic touch queues (`op2_tapms`) dispatch periodic taps, swipes, and HOME events, preventing idle sleep and unlocking the lockscreen interface.
+  5. System remains interactive with zero touch-driver panics across multi-hour runs.
+
+---
+
+## Milestone 8: Physical Display Pipeline & Surface Routing
+- **Hardware Target**: Physical OnePlus 2 with MDSS MDP5 command-mode panel (1080×1920, 32bpp, 4352 stride).
+- **Display Driver**: `OP2Framebuffer.cpp` and `OP2Surface.cpp`.
+- **Core Results & Breakthroughs**:
+  1. Handoff from LK continuous splash buffer (`0x03401000`) to XNU `AppleCLCD` framebuffer.
+  2. `fClientUI` path dynamically traces userland compositing surfaces (Surfaces 2..10).
+  3. Real-time software bilinear downsampling converts iOS 12 iPhone 6 Plus Retina frames (1242×2208) to native 1080×1920 panel memory.
+  4. 2-hour stability test (Run 172): 36,250 hardware presents executed across 10 distinct surfaces with 0 driver stalls.
+
+---
+
+## Milestone 9: Dual-Core SMP Bring-Up & Permanent Display Illumination
+- **Hardware Target**: Physical OnePlus 2 (`ONE A2003`, Snapdragon 810 / MSM8994).
+- **Kernel**: XNU 4903.270.47 on local branch `msm8994` (Commit `4444662`).
+- **Command Line**: `cpus=2 op2fb_client_ui=1 op2fb_keepon=1 op2_deadline=1800 op2_tapms=30000`
+- **Core Results & Breakthroughs**:
+  1. **Dual-Core SMP Operational (`cpus=2`)**:
+     - Secondary Cortex-A53 core (CPU 1) spun up via mailbox spin-table (`0x00080000` / `0x00080008`) and ARM PSCI `CPU_ON` SMC call (`0xC4000003`).
+     - CPU 1 configures architectural MMU and GICv2 interface in `start.s` (`arm_init_secondary`).
+     - Preemptive multi-core Mach scheduling, cross-core TLB shootdowns, and inter-processor interrupts (IPI via GICv2 SGI 0) verified stable.
+     - Boot time to SpringBoard slashed from 30–80 minutes down to ~5–6 minutes.
+  2. **Display Continuity Solved (`panel_nz = 2000/2000`)**:
+     - Evaluates RGB pixels via `(row[x] & 0x00FFFFFF) != 0` to differentiate opaque black (`0xFF000000`) from blank buffers.
+     - `AppleCLCD::present` freezes physical panel scanout memory (`fPixels`) when receiving empty composite frames (e.g. Surface 5 during mode transitions).
+     - Achieved 100% non-zero physical panel illumination (`panel_nz = 2000/2000`) throughout the entire 30-minute run.
+  3. **Dedicated `OP2Buttons` Consumer HID Service**:
+     - Bypassed `backboardd` digitizer keycode filtering by publishing Consumer/ConsumerControl (Page `0x0C`, Usage `0x40`).
+     - Direct Mach notification port binding with `SpringBoard`'s runloop ensures reliable Home button event processing.
+  4. **256MB Jetsam Footprint Floor**:
+     - Clamped minimum task memory limit in `osfmk/kern/task.c`, preventing `memorystatus` from terminating `assistivetouchd` under legacy iPhone 6 36MB profiles.
+  5. **Storage Resilience**:
+     - SDHCI driver with CMD12 abort handling and 3x retries completed 1,360,000+ operations with 0 errors.
+  6. **Clean Software Warm Reboot**:
+     - Controlled software shutdown upon reaching `op2_deadline=1800` pulls `PS_HOLD = 0` with IMEM restart cookie `0x77665502` intact, rebooting directly into TWRP with complete Ramoops ring log preserved.
 
 
 
