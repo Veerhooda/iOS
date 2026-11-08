@@ -29,7 +29,6 @@ __pycache__/
 build.log
 tools/lzssdec
 
-# History raw machine transcripts
-History/**/.system_generated/
-History/**/*.json
+# History & session archives
+History/
 
