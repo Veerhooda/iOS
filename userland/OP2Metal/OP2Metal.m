@@ -461,7 +461,10 @@ commandBufferCommit(id self, __unused SEL _cmd)
 	if (cb) {
 		cb->status = MTLCommandBufferStatusCommitted;
 		if (cb->presentedDrawable != nil) {
-			op2_log(@"Presenting drawable %p at commit", cb->presentedDrawable);
+			static uint32_t sLogCommitCount = 0;
+			if (++sLogCommitCount <= 3) {
+				op2_log(@"Presenting drawable %p at commit (#%u)", cb->presentedDrawable, sLogCommitCount);
+			}
 			if ([cb->presentedDrawable respondsToSelector:@selector(present)]) {
 				[cb->presentedDrawable present];
 			}
@@ -514,7 +517,10 @@ commandBufferAddHandler(id self, __unused SEL _cmd, void (^handler)(id))
 static void
 commandBufferPresentDrawable(id self, __unused SEL _cmd, id drawable)
 {
-	op2_log(@"presentDrawable: %p", drawable);
+	static uint32_t sLogPresentCount = 0;
+	if (++sLogPresentCount <= 3) {
+		op2_log(@"presentDrawable: %p (#%u)", drawable, sLogPresentCount);
+	}
 	void **slot = stateOf(self);
 	struct op2_cmd_buf *cb = slot ? (struct op2_cmd_buf *)*slot : NULL;
 	if (cb) {
@@ -547,7 +553,10 @@ commandBufferRenderEncoder(__unused id self, __unused SEL _cmd, __unused id desc
 		return nil;
 	}
 	id enc = [[gRenderEncoderClass alloc] init];
-	op2_log(@"Created render command encoder %p", enc);
+	static uint32_t sLogEncCount = 0;
+	if (++sLogEncCount <= 3) {
+		op2_log(@"Created render command encoder %p (#%u)", enc, sLogEncCount);
+	}
 	return enc;
 }
 
@@ -584,7 +593,10 @@ blitEndEncoding(id self, SEL _cmd)
 static void
 renderEndEncoding(id self, SEL _cmd)
 {
-	op2_log(@"renderEndEncoding on %p", self);
+	static uint32_t sLogEndEncCount = 0;
+	if (++sLogEndEncCount <= 3) {
+		op2_log(@"renderEndEncoding on %p (#%u)", self, sLogEndEncCount);
+	}
 	struct objc_super sup = { self, class_getSuperclass(gRenderEncoderClass) };
 	if (class_respondsToSelector(class_getSuperclass(gRenderEncoderClass), _cmd)) {
 		((void (*)(struct objc_super *, SEL))objc_msgSendSuper)(&sup, _cmd);
@@ -1144,6 +1156,24 @@ deviceIOSurfaceAlignment(__unused id self, __unused SEL _cmd)
 	return 64ULL;
 }
 
+static NSUInteger
+deviceMaxTextureDimension2D(__unused id self, __unused SEL _cmd)
+{
+	return 8192;
+}
+
+static NSUInteger
+deviceMaxTextureDimension3D(__unused id self, __unused SEL _cmd)
+{
+	return 2048;
+}
+
+static NSUInteger
+deviceMaxColorAttachments(__unused id self, __unused SEL _cmd)
+{
+	return 8;
+}
+
 static BOOL
 deviceYes(__unused id self, __unused SEL _cmd)
 {
@@ -1425,6 +1455,17 @@ registerOP2Metal(void)
 	class_addMethod(device, sel_registerName("supportsRenderTargetTextureRotation"), (IMP)deviceNo, "B@:");
 	class_addMethod(device, sel_registerName("supportsFeatureSet:"), (IMP)deviceSupportsFeatureSet, "B@:Q");
 	class_addMethod(device, sel_registerName("targetDeviceInfo"), (IMP)deviceTargetDeviceInfo, "^v@:");
+
+	class_addMethod(device, sel_registerName("maxTextureWidth2D"), (IMP)deviceMaxTextureDimension2D, "Q@:");
+	class_addMethod(device, sel_registerName("maxTextureHeight2D"), (IMP)deviceMaxTextureDimension2D, "Q@:");
+	class_addMethod(device, sel_registerName("maxTextureWidth3D"), (IMP)deviceMaxTextureDimension3D, "Q@:");
+	class_addMethod(device, sel_registerName("maxTextureHeight3D"), (IMP)deviceMaxTextureDimension3D, "Q@:");
+	class_addMethod(device, sel_registerName("maxTextureDepth3D"), (IMP)deviceMaxTextureDimension3D, "Q@:");
+	class_addMethod(device, sel_registerName("maxTextureDimensionCube"), (IMP)deviceMaxTextureDimension2D, "Q@:");
+	class_addMethod(device, sel_registerName("maxTextureArrayLayers"), (IMP)deviceMaxTextureDimension3D, "Q@:");
+	class_addMethod(device, sel_registerName("maxColorAttachments"), (IMP)deviceMaxColorAttachments, "Q@:");
+	class_addMethod(device, sel_registerName("maxFramebufferWidth"), (IMP)deviceMaxTextureDimension2D, "Q@:");
+	class_addMethod(device, sel_registerName("maxFramebufferHeight"), (IMP)deviceMaxTextureDimension2D, "Q@:");
 
 	class_addMethod(device, sel_registerName("newCommandQueue"), (IMP)deviceNewQueue, "@@:");
 	class_addMethod(device, sel_registerName("newCommandQueueWithMaxCommandBufferCount:"), (IMP)deviceNewQueueMax, "@@:Q");

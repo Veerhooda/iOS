@@ -15,7 +15,8 @@ clang -target arm64-apple-ios12.0 \
       -isysroot "${SDK}" \
       -bundle \
       -fobjc-arc \
-      -O2 \
+      -Os \
+      -fvisibility=hidden \
       -Wall \
       -Wno-deprecated-declarations \
       "${DIR}/OP2Metal.m" "${DIR}/op2_metallib.c" \
