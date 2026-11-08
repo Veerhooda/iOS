@@ -40,6 +40,9 @@ kern_return_t IOServiceClose(io_connect_t connect);
 kern_return_t IOConnectCallStructMethod(io_connect_t connect, uint32_t selector,
     const void *inputStruct, size_t inputStructCnt,
     void *outputStruct, size_t *outputStructCnt);
+kern_return_t IOConnectCallScalarMethod(io_connect_t connect, uint32_t selector,
+    const uint64_t *input, uint32_t inputCnt,
+    uint64_t *output, uint32_t *outputCnt);
 kern_return_t IOConnectMapMemory64(io_connect_t connect, uint32_t memoryType,
     task_port_t intoTask, mach_vm_address_t *atAddress,
     mach_vm_size_t *ofSize, IOOptionBits options);
@@ -57,6 +60,24 @@ enum {
 	kMsmGemCpuFini          = 0x45,
 	kMsmGemSubmit           = 0x46,
 	kMsmWaitFence           = 0x47,
+	kOP2Surface             = 0x7e,
+	kOP2Show                = 0x7f,
+};
+
+#define CP_MEM_WRITE            0x3d
+
+#define MSM_PREP_READ           0x01
+#define MSM_PREP_WRITE          0x02
+
+struct op2_surface_req {
+	uint32_t surface_id;
+	uint32_t handle;
+	uint64_t phys_addr;
+	uint64_t size;
+	uint32_t width;
+	uint32_t height;
+	uint32_t stride;
+	uint32_t format;
 };
 
 #define MSM_PARAM_GPU_ID        0x01
@@ -312,7 +333,148 @@ test_op2_gpu_userclient(void)
 		}
 	}
 
-	/* 9. Cleanup */
+	/* 9. Framebuffer & IOSurface Hardware Composition Test */
+	printf("\n=== Step 2b: Direct Hardware Framebuffer Composition (kOP2Surface & kOP2Show) ===\n");
+	struct op2_surface_req surf_req;
+	memset(&surf_req, 0, sizeof(surf_req));
+	surf_req.surface_id = 1; /* Physical Framebuffer Surface */
+	out_sz = sizeof(surf_req);
+	kr = IOConnectCallStructMethod(connect, kOP2Surface, &surf_req, sizeof(surf_req), &surf_req, &out_sz);
+	if (kr != KERN_SUCCESS || surf_req.handle == 0) {
+		printf("[-] kOP2Surface failed: 0x%x (handle %u)\n", kr, surf_req.handle);
+	} else {
+		printf("[+] Bound Framebuffer Surface 1 -> GPU Buffer Handle %u\n", surf_req.handle);
+		printf("    phys_addr: 0x%08llx, size: %llu bytes\n", surf_req.phys_addr, surf_req.size);
+		printf("    dimensions: %ux%u, stride: %u bytes, format: 0x%08x\n",
+		       surf_req.width, surf_req.height, surf_req.stride, surf_req.format);
+
+		/* Map Framebuffer into Userspace for CPU Verification */
+		mach_vm_address_t fb_user_addr = 0;
+		mach_vm_size_t fb_user_size = 0;
+		kr = IOConnectMapMemory64(connect, surf_req.handle, mach_task_self(), &fb_user_addr, &fb_user_size, kIOMapAnywhere);
+		if (kr != KERN_SUCCESS || fb_user_addr == 0) {
+			printf("[-] Failed to map framebuffer surface to userspace: 0x%x\n", kr);
+		} else {
+			printf("[+] Mapped Framebuffer to Userspace: virt=%p size=%llu bytes\n", (void *)fb_user_addr, fb_user_size);
+		}
+
+		/* Allocate a Command Buffer for GPU Framebuffer Drawing */
+		struct msm_gem_new cmd_gem;
+		memset(&cmd_gem, 0, sizeof(cmd_gem));
+		cmd_gem.size = 4096;
+		out_sz = sizeof(cmd_gem);
+		kr = IOConnectCallStructMethod(connect, kMsmGemNew, &cmd_gem, sizeof(cmd_gem), &cmd_gem, &out_sz);
+		if (kr == KERN_SUCCESS && cmd_gem.handle != 0) {
+			mach_vm_address_t cmd_user_addr = 0;
+			mach_vm_size_t cmd_user_size = 0;
+			IOConnectMapMemory64(connect, cmd_gem.handle, mach_task_self(), &cmd_user_addr, &cmd_user_size, kIOMapAnywhere);
+
+			/* Encode Adreno 430 PM4 Direct Hardware Writes to Framebuffer Physical Address */
+			uint32_t *fb_cmds = (uint32_t *)cmd_user_addr;
+			uint32_t test_pixel = 0x00FF00FF; /* Vivid Magenta */
+			uint32_t n_pixels = 32;
+
+			/* Pre-fill with canary on CPU */
+			if (fb_user_addr) {
+				uint32_t *fb_pixels = (uint32_t *)fb_user_addr;
+				for (uint32_t i = 0; i < n_pixels; i++) {
+					fb_pixels[i] = 0x12345678;
+				}
+				uint32_t fb_h = surf_req.handle;
+				IOConnectCallStructMethod(connect, kMsmGemCpuFini, &fb_h, sizeof(fb_h), NULL, NULL);
+			}
+
+			fb_cmds[0] = cp_type3_packet(CP_MEM_WRITE, 1 + n_pixels);
+			fb_cmds[1] = (uint32_t)surf_req.phys_addr; /* DDR physical destination */
+			for (uint32_t i = 0; i < n_pixels; i++) {
+				fb_cmds[2 + i] = test_pixel;
+			}
+			fb_cmds[2 + n_pixels] = cp_type3_packet(CP_WAIT_FOR_IDLE, 1);
+			fb_cmds[3 + n_pixels] = 0x00000000;
+			uint32_t total_cmd_words = 4 + n_pixels;
+
+			printf("[+] Encoded Adreno 430 PM4 CP_MEM_WRITE packet (%u words) targeting FB phys 0x%08llx\n",
+			       total_cmd_words, surf_req.phys_addr);
+
+			uint32_t cmd_handle = cmd_gem.handle;
+			IOConnectCallStructMethod(connect, kMsmGemCpuFini, &cmd_handle, sizeof(cmd_handle), NULL, NULL);
+
+			/* Submit Hardware Command Stream with Both BOs (Command Buffer + Framebuffer) */
+			struct msm_gem_submit_bo bos[2];
+			memset(bos, 0, sizeof(bos));
+			bos[0].handle = cmd_gem.handle;
+			bos[1].handle = surf_req.handle;
+
+			struct msm_gem_submit_cmd submit_cmd;
+			memset(&submit_cmd, 0, sizeof(submit_cmd));
+			submit_cmd.type = MSM_SUBMIT_CMD_BUF;
+			submit_cmd.submit_idx = 0;
+			submit_cmd.submit_offset = 0;
+			submit_cmd.size = total_cmd_words * sizeof(uint32_t);
+
+			struct msm_gem_submit fb_submit;
+			memset(&fb_submit, 0, sizeof(fb_submit));
+			fb_submit.nr_bos = 2;
+			fb_submit.bos = (uint64_t)(uintptr_t)bos;
+			fb_submit.nr_cmds = 1;
+			fb_submit.cmds = (uint64_t)(uintptr_t)&submit_cmd;
+
+			out_sz = sizeof(fb_submit);
+			kr = IOConnectCallStructMethod(connect, kMsmGemSubmit, &fb_submit, sizeof(fb_submit), &fb_submit, &out_sz);
+			if (kr != KERN_SUCCESS || fb_submit.fence == 0) {
+				printf("[-] kMsmGemSubmit for FB composition failed: 0x%x\n", kr);
+			} else {
+				printf("[+] Submitted Framebuffer Composition commands! Hardware fence: %u\n", fb_submit.fence);
+
+				struct msm_wait_fence wait_f;
+				memset(&wait_f, 0, sizeof(wait_f));
+				wait_f.fence = fb_submit.fence;
+				wait_f.timeout.seconds = 5;
+				kr = IOConnectCallStructMethod(connect, kMsmWaitFence, &wait_f, sizeof(wait_f), NULL, NULL);
+				if (kr == KERN_SUCCESS) {
+					printf("[+] SUCCESS: Fence %u completed! Adreno 430 wrote directly to panel framebuffer over AXI DDR DMA!\n", fb_submit.fence);
+
+					/* Verify GPU written pixels from userspace */
+					if (fb_user_addr) {
+						uint32_t fb_h = surf_req.handle;
+						IOConnectCallStructMethod(connect, kMsmGemCpuFini, &fb_h, sizeof(fb_h), NULL, NULL);
+
+						__asm__ volatile("dsb sy" ::: "memory");
+						uint32_t *fb_pixels = (uint32_t *)fb_user_addr;
+						int verified_pixels = 0;
+						for (uint32_t i = 0; i < n_pixels; i++) {
+							if (fb_pixels[i] == test_pixel) {
+								verified_pixels++;
+							}
+						}
+						printf("[+] Readback verification: %d/%d pixels match 0x%08x (sample pixel[0]: 0x%08x)\n",
+						       verified_pixels, n_pixels, test_pixel, fb_pixels[0]);
+					}
+
+					/* Trigger Instant Display Panel Refresh via kOP2Show */
+					kr = IOConnectCallScalarMethod(connect, kOP2Show, NULL, 0, NULL, NULL);
+					if (kr == KERN_SUCCESS) {
+						printf("[+] Successfully invoked kOP2Show: MDSS CTL0 / DSI scanout kicked to display GRAM!\n");
+					} else {
+						printf("[-] kOP2Show failed: 0x%x\n", kr);
+					}
+				} else {
+					printf("[-] kMsmWaitFence timed out or failed: 0x%x\n", kr);
+				}
+			}
+
+			if (cmd_user_addr) IOConnectUnmapMemory64(connect, cmd_gem.handle, mach_task_self(), cmd_user_addr);
+			uint32_t close_cmd = cmd_gem.handle;
+			IOConnectCallStructMethod(connect, kDrmGemClose, &close_cmd, sizeof(close_cmd), NULL, NULL);
+		}
+
+		if (fb_user_addr) IOConnectUnmapMemory64(connect, surf_req.handle, mach_task_self(), fb_user_addr);
+		uint32_t close_fb = surf_req.handle;
+		IOConnectCallStructMethod(connect, kDrmGemClose, &close_fb, sizeof(close_fb), NULL, NULL);
+		printf("[+] Cleaned up framebuffer composition buffers.\n");
+	}
+
+	/* 10. Cleanup Initial GEM Buffer */
 	IOConnectUnmapMemory64(connect, gem_new.handle, mach_task_self(), user_addr);
 	uint32_t close_handle = gem_new.handle;
 	IOConnectCallStructMethod(connect, kDrmGemClose, &close_handle, sizeof(close_handle), NULL, NULL);
@@ -419,6 +581,7 @@ main(int argc, const char *argv[])
 		fflush(stdout);
 		printf("====================================================\n\n");
 		fflush(stdout);
+		exit(0);
 	}
 	return 0;
 }

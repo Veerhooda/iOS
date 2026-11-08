@@ -22,9 +22,18 @@
 #include <unistd.h>
 #include "op2_metallib.h"
 
+/* IOKit Declarations */
+typedef mach_port_t io_object_t;
+typedef io_object_t io_service_t;
+extern const mach_port_t kIOMasterPortDefault;
+CFMutableDictionaryRef IOServiceMatching(const char *name);
+io_service_t IOServiceGetMatchingService(mach_port_t masterPort, CFDictionaryRef matching);
+kern_return_t IOObjectRelease(io_object_t object);
+
 static Class gBaseDevice;
 static unsigned int gAcceleratorPort;
 static id gDeviceInstance;
+static BOOL gDeviceAdded = NO;
 
 static void
 op2_log(NSString *format, ...)
@@ -329,7 +338,9 @@ queueCommandBuffer(__unused id self, __unused SEL _cmd)
 static void
 queueDealloc(id self, SEL _cmd)
 {
-	deallocWith(self, _cmd, gQueueClass, NULL);
+	struct objc_super sup = { self, objc_getClass("NSObject") };
+	void (*send)(struct objc_super *, SEL) = (void (*)(struct objc_super *, SEL))objc_msgSendSuper;
+	send(&sup, _cmd);
 }
 
 static id
@@ -798,8 +809,39 @@ deviceInit(id self, SEL _cmd, unsigned int port)
 	gAcceleratorPort = port;
 	gDeviceInstance = self;
 	(void)_cmd;
-	op2_log(@"Initialized OP2MetalDevice for IOAcceleratorES port %u", port);
+	op2_log(@"Initialized OP2MetalDevice (%p) for IOAcceleratorES port %u", self, port);
 	return self;
+}
+
+static void
+deviceInitLimits(__unused id self, __unused SEL _cmd)
+{
+	op2_log(@"[OP2MetalDevice initLimits] called");
+}
+
+static void
+deviceRegisterDevices(id self, __unused SEL _cmd)
+{
+	op2_log(@"+[OP2MetalDevice registerDevices] invoked by Metal.framework");
+	if (gDeviceInstance == nil) {
+		io_service_t service = IOServiceGetMatchingService(kIOMasterPortDefault, IOServiceMatching("IOAcceleratorES"));
+		if (!service) {
+			service = IOServiceGetMatchingService(kIOMasterPortDefault, IOServiceMatching("IOAccelerator"));
+		}
+		id raw = [((Class)self) alloc];
+		gDeviceInstance = ((id (*)(id, SEL, unsigned int))objc_msgSend)(raw, sel_registerName("initWithAcceleratorPort:"), service);
+		if (service) {
+			IOObjectRelease(service);
+		}
+	}
+	if (!gDeviceAdded && gDeviceInstance != nil) {
+		void (*pMTLAddDevice)(id) = (void (*)(id))dlsym(RTLD_DEFAULT, "MTLAddDevice");
+		if (pMTLAddDevice) {
+			op2_log(@"Adding OP2MetalDevice %p to Metal device array via MTLAddDevice", gDeviceInstance);
+			pMTLAddDevice(gDeviceInstance);
+			gDeviceAdded = YES;
+		}
+	}
 }
 
 /* Process Gate: metal=1/2/3 */
@@ -877,9 +919,12 @@ registerOP2Metal(void)
 		return;
 	}
 
-	gBaseDevice = objc_getClass("_MTLDevice");
+	gBaseDevice = objc_getClass("MTLIOAccelDevice");
 	if (gBaseDevice == Nil) {
-		op2_log(@"System lacks _MTLDevice base class; aborting registration");
+		gBaseDevice = objc_getClass("_MTLDevice");
+	}
+	if (gBaseDevice == Nil) {
+		op2_log(@"System lacks MTLIOAccelDevice / _MTLDevice base class; aborting registration");
 		return;
 	}
 
@@ -899,8 +944,17 @@ registerOP2Metal(void)
 
 	declareProtocolFamily(device, "MTLDevice");
 
+	Protocol *spiProto = objc_getProtocol("MTLDeviceSPI");
+	if (spiProto) {
+		class_addProtocol(device, spiProto);
+		if (gProtocolCount < (sizeof(gProtocols) / sizeof(gProtocols[0]))) {
+			gProtocols[gProtocolCount++] = spiProto;
+		}
+	}
+
 	/* Bind essential MTLDevice methods */
 	class_addMethod(device, @selector(initWithAcceleratorPort:), (IMP)deviceInit, "@@:I");
+	class_addMethod(device, sel_registerName("initLimits"), (IMP)deviceInitLimits, "v@:");
 	class_addMethod(device, @selector(name), (IMP)deviceName, "@@:");
 	class_addMethod(device, @selector(registryID), (IMP)deviceRegistryID, "Q@:");
 	class_addMethod(device, sel_registerName("maxBufferLength"), (IMP)deviceMaxBufferLength, "Q@:");
@@ -937,6 +991,12 @@ registerOP2Metal(void)
 	objc_registerClassPair(device);
 	op2_log(@"Class OP2MetalDevice registered successfully");
 
+	/* Bind class method +registerDevices on metaclass */
+	Class metaClass = object_getClass((id)device);
+	if (metaClass) {
+		class_addMethod(metaClass, sel_registerName("registerDevices"), (IMP)deviceRegisterDevices, "v@:");
+	}
+
 	/* Command Queue Class */
 	gQueueClass = makeCustomClass("OP2MetalQueue", "_MTLCommandQueue", "MTLCommandQueue", (IMP)queueDealloc);
 	if (gQueueClass) {
@@ -949,7 +1009,7 @@ registerOP2Metal(void)
 	}
 
 	/* Command Buffer Class */
-	gCommandBufferClass = makeCustomClass("OP2MetalCommandBuffer", "_MTLCommandBuffer", "MTLCommandBuffer", NULL);
+	gCommandBufferClass = makeCustomClass("OP2MetalCommandBuffer", "_MTLCommandBuffer", "MTLCommandBuffer", (IMP)queueDealloc);
 	if (gCommandBufferClass) {
 		class_addMethod(gCommandBufferClass, sel_registerName("status"), (IMP)commandBufferStatus, "Q@:");
 		class_addMethod(gCommandBufferClass, sel_registerName("error"), (IMP)commandBufferError, "@@:");
@@ -965,7 +1025,7 @@ registerOP2Metal(void)
 	}
 
 	/* Blit Command Encoder */
-	gBlitEncoderClass = makeCustomClass("OP2MetalBlitEncoder", "_MTLCommandEncoder", "MTLBlitCommandEncoder", NULL);
+	gBlitEncoderClass = makeCustomClass("OP2MetalBlitEncoder", "_MTLCommandEncoder", "MTLBlitCommandEncoder", (IMP)queueDealloc);
 	if (gBlitEncoderClass) {
 		class_addMethod(gBlitEncoderClass, sel_registerName("copyFromBuffer:sourceOffset:toBuffer:destinationOffset:size:"), (IMP)blitCopyBuffer, "v@:@Q@QQ");
 		class_addMethod(gBlitEncoderClass, sel_registerName("fillBuffer:range:value:"), (IMP)blitFillBuffer, "v@:@{_NSRange=QQ}C");
