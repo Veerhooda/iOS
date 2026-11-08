@@ -150,7 +150,7 @@ def build(seed=None, qemu=False):
             ('peripheral-frequency', u32(timebase)),
             ('fixed-frequency', u32(timebase)),
         ])
-    cpu_nodes = [_cpu_node(0), _cpu_node(1)]
+    cpu_nodes = [_cpu_node(0), _cpu_node(1), _cpu_node(2), _cpu_node(3)]
     cpus = node('cpus', [ph(), ('#address-cells', u32(1)),
                          ('#size-cells', u32(0))], cpu_nodes)
 

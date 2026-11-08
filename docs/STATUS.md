@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-Apple iOS 12.5.7 runs reliably on the OnePlus 2 (`ONE A2003`, Snapdragon 810 / MSM8994). **Dual-core SMP (`cpus=2`) is fully operational**, cutting boot times from 30–80 minutes down to ~5–6 minutes. **Display continuity is solved (Milestone 9)**: with RGB alpha-masking and composite zero-fill frame preservation, 100% of sampled panel pixels remained non-zero (`panel_nz = 2000/2000` sampled across the panel grid) across full 30-minute test cycles with SpringBoard and backboardd active. Dedicated `OP2Buttons` Consumer HID service delivers Home button events directly into SpringBoard's Mach runloop. Storage subsystem is 100% resilient with zero eMMC faults across millions of operations.
+Apple iOS 12.5.7 runs reliably on the OnePlus 2 (`ONE A2003`, Snapdragon 810 / MSM8994). **Quad-core Little Cluster SMP (`cpus=4`) is fully operational**, cutting boot times from 30–80 minutes down to ~5–6 minutes. **Display continuity is solved (Milestone 9 & Phase 7)**: with RGB alpha-masking, composite zero-fill frame preservation, and active client surface candidate fallback scanout, 100% of sampled panel pixels remained non-zero across full test cycles with SpringBoard and backboardd active. Dedicated `OP2Buttons` Consumer HID service delivers Home button events directly into SpringBoard's Mach runloop, waking the Lock Screen. Synaptics S3320 digitizer touch events route directly to `SpringBoard` (PID 41). Storage subsystem is 100% resilient with zero eMMC faults across millions of operations.
 
 ---
 
@@ -26,6 +26,7 @@ Apple iOS 12.5.7 runs reliably on the OnePlus 2 (`ONE A2003`, Snapdragon 810 / M
 | **M14** | Framebuffer Hardware Composition & Metal Discovery | **Phase 4 Complete**: Direct hardware composition via `kOP2Surface` (0x7e) & `kOP2Show` (0x7f), Apple Metal.framework reverse-engineering, `MTLCreateSystemDefaultDevice()` returns `OnePlus 2 Adreno 430 (OP2Metal)`, 1MB buffer write/readback, blit command encoder, 100% silicon pass | **Phase 4** |
 | **M15** | QuartzCore, CAMetalLayer & IOSurface Presentation | **Phase 5 Complete**: QuartzCore `default.metallib` loading (62 shader functions, `clear_vert`), `CAMetalLayer` creation, `newTextureWithDescriptor:iosurface:plane:` returning `OP2MetalTexture`, `iosurfaceTextureAlignmentBytes` = 64 bytes, `supportsFamily:` Apple1/2 and Common1/2, `MTLRenderCommandEncoder` with clean `endEncoding`, `presentDrawable:` triggering `kOP2Show` on commit, ARC `__unsafe_unretained` dealloc fix, 100% silicon pass (`rv=0x0 (sig 0, exit 0)`) | **Phase 5** |
 | **M16** | SpringBoard & System Apps Metal Integration | **Phase 6 Complete**: `backboardd` and `SpringBoard` (PID 41) running stably on physical silicon under SMP dual-core (`cpus=2`) across full 600s deadline with zero crashes; ARC `OP2_RETURNS_RETAINED` method family fix; OpenGLES `IOGLESBundleName` metadata & 256-byte bootline fix; full Lock Screen (`SBDashBoardCombinedListViewController`) & icon lifecycle verified | **Phase 6** |
+| **M17** | 4-Core Little Cluster SMP & Touch Wake | **Phase 7 Complete**: 4-core Cortex-A53 SMP (`cpus=4`, cores 0..3) online in XNU; display layer composition fallback scanout; digitizer & capacitive Home button event routing to `SpringBoard` (PID 41); Lock Screen wake animations verified; zero crashes across 600s deadline | **Phase 7** |
 
 ---
 
@@ -65,11 +66,11 @@ Apple iOS 12.5.7 runs reliably on the OnePlus 2 (`ONE A2003`, Snapdragon 810 / M
 
 | Subsystem | State | Current Implementation | Next Step |
 | :--- | :--- | :--- | :--- |
-| **Graphics Acceleration** | **PHASE 6 COMPLETE** | `OP2GPUUserClient` (`msm_drm` ABI), contiguous DDR GEM mapping, EL0 PM4 indirect buffer dispatch, `kOP2Surface` & `kOP2Show` hardware composition, `OP2Metal.bundle` registered, `default.metallib` parsed (62 shaders), `CAMetalLayer` & `IOSurface` textures operational, `backboardd` & `SpringBoard` running crash-free under Metal | Phase 7: Retina display compositing & touch interaction |
-| **SMP (Multi-Core)** | **VERIFIED (Dual-Core)** | CPU 0 + CPU 1 online (`cpus=2`) via mailbox & PSCI | Expand to 4-core Little Cluster (CPU 2 + CPU 3) |
-| **Display Panel** | **VERIFIED (Milestone 9)** | Continuous scanout, zero-fill freeze, 100% sampled pixels lit (`panel_nz = 2000/2000`) | Implement hardware MDP5 pipe commit |
-| **Home Button / Navigation** | **VERIFIED** | Dedicated `OP2Buttons` Consumer HID (0x0C/0x40) | Refine gesture recognition in SpringBoard |
-| **Touchscreen (S3320)** | **OPERATIONAL** | Synaptics S3320 I2C driver + synthetic autotap queue | Tune I2C interrupt delivery for interactive latency |
+| **Graphics Acceleration** | **PHASE 6 COMPLETE** | `OP2GPUUserClient` (`msm_drm` ABI), contiguous DDR GEM mapping, EL0 PM4 indirect buffer dispatch, `kOP2Surface` & `kOP2Show` hardware composition, `OP2Metal.bundle` registered, `default.metallib` parsed (62 shaders), `CAMetalLayer` & `IOSurface` textures operational, `backboardd` & `SpringBoard` running crash-free under Metal | Phase 8: Hardware MDP5 pipe direct scanout |
+| **SMP (Multi-Core)** | **VERIFIED (Quad-Core 4xA53)** | Cores 0..3 online (`cpus=4`) via SCM cold boot & ACC unclamp | Explore 8-core Big.LITTLE (Cortex-A57 cores 4..7) |
+| **Display Panel** | **VERIFIED (Phase 7 Fallback)** | Continuous scanout, zero-fill freeze, candidate fallback scanning | Implement hardware MDP5 pipe commit |
+| **Home Button / Navigation** | **VERIFIED** | Dedicated `OP2Buttons` Consumer HID (0x0C/0x40) wakes SpringBoard Lock Screen | Refine gesture recognition in SpringBoard |
+| **Touchscreen (S3320)** | **OPERATIONAL & ROUTED** | Synaptics S3320 I2C driver + synthetic autotap/swipe queue routing to `SpringBoard` (PID 41) via `backboardd` | Tune I2C interrupt delivery for interactive latency |
 | **Storage (eMMC 5.0)** | **ROCK SOLID** | Polled SDHCI PIO with CMD12 abort & 3x retries | Implement SDHCI ADMA2 scatter-gather DMA |
 | **Process Hygiene** | **STABLE** | HunkQC, HunkCV, 256MB jetsam floor | Target Camera/Photos Metal null assertions |
 | **Boot Speed** | **FAST** | ~5–6 minutes to SpringBoard UI | Further daemon trimming and code-sign fast paths |
