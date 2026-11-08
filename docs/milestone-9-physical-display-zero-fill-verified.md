@@ -5,13 +5,13 @@
 **Kernel:** XNU 4903.270.47 (`DEVELOPMENT_ARM64_MSM8994`, Darwin 18.7.0)  
 **Run:** Run 183 (B25 Build)  
 **Duration:** 1,800 seconds (30 minutes soak test, 03:36:21 to 04:06:21 IST)  
-**Status:** **SUCCESS** — 100% lit display (`panel_nz = 2000/2000`), 0 blackouts, 0 jetsam kills, 0 eMMC errors, clean deadline reset.
+**Status:** **SUCCESS** — 100% of sampled panel pixels remained non-zero (`panel_nz = 2000/2000`), 0 blackouts, 0 jetsam kills, 0 eMMC errors, clean deadline reset.
 
 ---
 
 ## 1. Executive Summary
 
-Run 183 (B25) successfully resolved the screen blanking / black screen issue that occurred in previous runs. By correcting the pixel sampling logic in [`op2_fb_sample_nz`](file:///Users/veerhooda/oneplus2/xnu/xnu-4903.270.47/iokit/Kernel/arm/OP2Framebuffer.cpp#L568) and introducing non-zero panel memory preservation, the OnePlus 2 maintained a continuously illuminated UI for the entire 30-minute duration.
+Run 183 (B25) successfully resolved the screen blanking / black screen issue that occurred in previous runs. By correcting the pixel sampling logic in [`op2_fb_sample_nz`](https://github.com/Veerhooda/xnu/blob/msm8994/iokit/Kernel/arm/OP2Framebuffer.cpp#L568) and introducing non-zero panel memory preservation, the OnePlus 2 maintained a continuously illuminated UI for the entire 30-minute duration.
 
 ```text
 OP2 FB STATS: presents=125 kicks=217 shown=5 panel=1080x1920 panel_nz=2000/2000 lastnz=0

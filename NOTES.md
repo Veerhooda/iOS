@@ -39,7 +39,7 @@ Queried via `/sys/class/graphics/fb0/`, dmesg, and `live.dts`:
 * **RGB Alpha Masking & Zero-Fill Preservation (Milestone 9)**:
   * Masks evaluation with `(row[x] & 0x00FFFFFF) != 0` to distinguish opaque black (`0xFF000000`) from empty surfaces.
   * When `backboardd` issues blank composite swap commands, `AppleCLCD::present` freezes physical panel memory (`fPixels`).
-  * Yields 100% illumination continuity (`panel_nz = 2000/2000`) over 30-minute soaks.
+  * Yields display continuity with 100% of sampled panel pixels remaining non-zero (`panel_nz = 2000/2000`) over 30-minute soaks.
 
 ### 3. Interrupt Controller (GICv2)
 Confirmed via `interrupt-controller@f9000000`:
@@ -460,7 +460,7 @@ Modeled after Apple's clean `BCM2837` (Raspberry Pi 3) implementation, avoiding 
   2. **Display Continuity Solved (`panel_nz = 2000/2000`)**:
      - Evaluates RGB pixels via `(row[x] & 0x00FFFFFF) != 0` to differentiate opaque black (`0xFF000000`) from blank buffers.
      - `AppleCLCD::present` freezes physical panel scanout memory (`fPixels`) when receiving empty composite frames (e.g. Surface 5 during mode transitions).
-     - Achieved 100% non-zero physical panel illumination (`panel_nz = 2000/2000`) throughout the entire 30-minute run.
+     - Achieved display continuity with 100% of sampled panel pixels remaining non-zero (`panel_nz = 2000/2000`) throughout the entire 30-minute run.
   3. **Dedicated `OP2Buttons` Consumer HID Service**:
      - Bypassed `backboardd` digitizer keycode filtering by publishing Consumer/ConsumerControl (Page `0x0C`, Usage `0x40`).
      - Direct Mach notification port binding with `SpringBoard`'s runloop ensures reliable Home button event processing.

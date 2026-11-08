@@ -6,7 +6,7 @@ Method inspired by [dipa-studio/ios-sweet](https://github.com/dipa-studio/ios-sw
 
 **Status (2026-11-08): Dual-core SMP & Permanent Display Verified.**
 * **Dual-Core SMP (`cpus=2`):** Cortex-A53 CPU 0 + CPU 1 online via hardware mailbox and PSCI `CPU_ON`, stable over 30-minute soak runs with 0 eMMC errors and clean deadline resets. Boot time cut to ~5–6 minutes.
-* **Display Continuity (Milestone 9):** 100% panel memory illumination (`panel_nz = 2000/2000`) across full 30-minute runs. Zero-fill frame preservation prevents `backboardd` from blanking the physical panel. Dynamic userland surface progression (Surfaces 2, 9, 12, 15, 18, 21) rendered on CPU and downsampled from 1242×2208 Retina to 1080×1920.
+* **Display Continuity (Milestone 9):** 100% of sampled panel pixels remained non-zero (`panel_nz = 2000/2000` sampled across the panel grid) across full 30-minute runs. Zero-fill frame preservation prevents `backboardd` from blanking the physical panel. Dynamic userland surface progression (Surfaces 2, 9, 12, 15, 18, 21) rendered on CPU and downsampled from 1242×2208 Retina to 1080×1920.
 * **Home Button & Input:** Dedicated `OP2Buttons` Consumer HID service with direct SpringBoard Mach notification port binding. Simulated AUTOHOME and capacitive touch events actively wake and control SpringBoard.
 * **Jetsam Protection:** 256MB task memory limit floor protects `assistivetouchd` and essential daemons from fatal out-of-memory kills on 4GB physical DRAM.
 
@@ -92,7 +92,7 @@ flowchart TD
    * Cross-core TLB shootdowns, inter-processor interrupts (IPI via GICv2 SGI), and dual-thread scheduling operational.
 2. **Permanent Physical Illumination & Zero-Fill Guard (Milestone 9):**
    * **Alpha Masking Fix:** Evaluates `(row[x] & 0x00FFFFFF) != 0` to distinguish opaque black compositor frames (`0xFF000000`) from true UI graphics.
-   * **Frame Freeze:** When `backboardd` submits blank composite swaps, `AppleCLCD::present` freezes the existing non-zero display memory, preserving active UI on-screen and achieving `panel_nz = 2000/2000` (100% lit UI).
+   * **Frame Freeze:** When `backboardd` submits blank composite swaps, `AppleCLCD::present` freezes the existing non-zero display memory, preserving active UI on-screen with 100% of sampled panel pixels remaining non-zero (`panel_nz = 2000/2000`).
    * **Dynamic Surface Routing:** Scans userland surfaces up to ID 63, automatically downsampling SpringBoard's double-buffered Retina frames (1242×2208) to native 1080×1920 BGR888 panel memory.
 3. **Dedicated `OP2Buttons` HID Service:**
    * Bypasses the limitation where `backboardd` refused keyboard-typed button events from digitizers.
@@ -106,21 +106,20 @@ flowchart TD
 
 ## Repository Structure
 
-- [`tools/`](file:///Users/veerhooda/oneplus2/tools/) — Build, packaging, payload, flash, and analysis utilities:
+- [`tools/`](tools/) — Build, packaging, payload, flash, and analysis utilities:
   * `mkadt.py` — Generates Apple Device Tree with dual-core SMP nodes.
   * `mkpayload.py` — Compiles XNU Mach-O segments and ADT into `OP2XNU01` payloads.
   * `hunkMA.py` & `hunkMA2.py` — MobileAsset synchronous query fail-fast stubs.
   * `op2hfs.py` — Raw in-place HFS+/HFSX reader/writer for on-device userdata inspection.
-- [`shim/`](file:///Users/veerhooda/oneplus2/shim/) — Bare-metal ARM64 Little Kernel boot shim and FDT parser.
-- [`docs/`](file:///Users/veerhooda/oneplus2/docs/) — Technical milestone verifications, architecture docs, and boot references:
-  * [`docs/STATUS.md`](file:///Users/veerhooda/oneplus2/docs/STATUS.md) — Comprehensive project status, run history, and verification matrix.
-  * [`docs/milestone-9-physical-display-zero-fill-verified.md`](file:///Users/veerhooda/oneplus2/docs/milestone-9-physical-display-zero-fill-verified.md) — Milestone 9 display continuity verification.
-  * [`docs/HOW-IT-BOOTS.md`](file:///Users/veerhooda/oneplus2/docs/HOW-IT-BOOTS.md) — Detailed 11-stage boot sequence reference.
-  * [`docs/OP2_KERNEL_CHANGES.md`](file:///Users/veerhooda/oneplus2/docs/OP2_KERNEL_CHANGES.md) — Index of MSM8994 XNU kernel source modifications.
-  * [`docs/HACKS.md`](file:///Users/veerhooda/oneplus2/docs/HACKS.md) — Shims, workarounds, and technical debt tracking.
-- [`research/`](file:///Users/veerhooda/oneplus2/research/) — Deep-dive postmortems, symbolication traces, and crash investigations.
-- [`History/`](file:///Users/veerhooda/oneplus2/History/) — Session handoffs, trajectory logs, and milestone artifacts.
-- [`xnu/`](file:///Users/veerhooda/oneplus2/xnu/xnu-4903.270.47/) — Nested XNU repository (branch `msm8994`).
+- [`shim/`](shim/) — Bare-metal ARM64 Little Kernel boot shim and FDT parser.
+- [`docs/`](docs/) — Technical milestone verifications, architecture docs, and boot references:
+  * [`docs/STATUS.md`](docs/STATUS.md) — Comprehensive project status, run history, and verification matrix.
+  * [`docs/milestone-9-physical-display-zero-fill-verified.md`](docs/milestone-9-physical-display-zero-fill-verified.md) — Milestone 9 display continuity verification.
+  * [`docs/HOW-IT-BOOTS.md`](docs/HOW-IT-BOOTS.md) — Detailed 11-stage boot sequence reference.
+  * [`docs/OP2_KERNEL_CHANGES.md`](docs/OP2_KERNEL_CHANGES.md) — Index of MSM8994 XNU kernel source modifications.
+  * [`docs/HACKS.md`](docs/HACKS.md) — Shims, workarounds, and technical debt tracking.
+- [`research/`](research/) — Deep-dive postmortems, symbolication traces, and crash investigations.
+- [`xnu/`](https://github.com/Veerhooda/xnu) — Custom XNU kernel repository (`msm8994` branch).
 
 ---
 

@@ -53,7 +53,7 @@ This document indexes all commits and technical modifications made to the kernel
   - Updated to `(row[x] & 0x00FFFFFF) != 0` to accurately evaluate true RGB content.
 - **Zero-Fill Frame Preservation:**
   - When `backboardd` issues composite swap commands targeting an uninitialized or empty surface (e.g. Surface 5 during mode switches), `AppleCLCD::present` freezes the existing non-zero frame buffer in physical panel memory (`fPixels`).
-  - Permanently cures display blanking regressions, achieving `panel_nz = 2000/2000` (100% illumination) over 30-minute soaks.
+  - Permanently cures display blanking regressions, with 100% of sampled panel pixels remaining non-zero (`panel_nz = 2000/2000`) over 30-minute soaks.
 - **Power Veto:**
   - Intercepts display power state transitions in `IOPMrootDomain.cpp` and `OP2Framebuffer.cpp`, vetoing display sleep commands (`op2fb_keepon=1`).
 

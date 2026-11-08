@@ -89,7 +89,7 @@ OP2 FB: fPixels=0xfffffff109315000 fPhys=0x3400000 1080x1920 stride=4352
 ### 3. File System & Mount Defense
 - Resolved `launchd` emergency shutdown caused by `fstab` rw remount failure on read-only root.
 - Patched `/private/etc/fstab` on `userdata` to `ro` (`/dev/disk0s1 / hfs ro 0 1`).
-- Added defensive kernel check in [`bsd/vfs/vfs_syscalls.c`](file:///Users/veerhooda/Downloads/OnePlus%202/xnu/xnu-4903.270.47/bsd/vfs/vfs_syscalls.c) catching `EROFS` on `MNT_ROOTFS` update mounts and retaining `MNT_RDONLY` without failing.
+- Added defensive kernel check in [`bsd/vfs/vfs_syscalls.c`](https://github.com/Veerhooda/xnu/blob/msm8994/bsd/vfs/vfs_syscalls.c) catching `EROFS` on `MNT_ROOTFS` update mounts and retaining `MNT_RDONLY` without failing.
 
 ---
 

@@ -42,7 +42,7 @@ flowchart TD
         X --> Y["SpringBoard (PID 41) Launches & Binds Mach Notification Ports"]
         Y --> Z["OP2Buttons Consumer HID Service (0x0C/0x40) Delivers Home Events"]
         Z --> AA["OP2Framebuffer Dynamic Scanout: Downsample 1242x2208 to 1080x1920"]
-        AA --> AB["Zero-Fill Preservation: Freeze Frame on Blank Composite Swaps (panel_nz=2000/2000)"]
+        AA --> AB["Zero-Fill Preservation: Freeze Frame on Blank Composite Swaps (100% Sampled Pixels Lit: panel_nz=2000/2000)"]
     end
 
     subgraph Teardown["Stage 11: Automated Software Warm Reset"]
@@ -193,7 +193,7 @@ Control transfers to `start.s` in `xnu-4903.270.47`:
 3. **Zero-Fill Frame Preservation (Milestone 9):**
    - Evaluates pixels with RGB alpha mask `(row[x] & 0x00FFFFFF) != 0` to distinguish opaque black from empty frames.
    - When `backboardd` submits an empty composite frame (e.g. Surface 5 during mode transitions), `AppleCLCD::present` freezes the existing non-zero frame in physical panel memory (`fPixels`).
-   - Eliminates screen blanking, achieving `panel_nz = 2000/2000` (100% illumination) over 30-minute runs.
+   - Eliminates screen blanking, with 100% of sampled panel pixels remaining non-zero (`panel_nz = 2000/2000`) over 30-minute runs.
 4. **Power State Veto:**
    - Intercepts display power transitions, enforcing `op2fb_keepon=1` to prevent display dimming or hardware sleep.
 

@@ -3,7 +3,7 @@
 **Platform:** OnePlus 2 (`ONE A2003`, Qualcomm MSM8994 / Snapdragon 810 v2.1)  
 **Date:** October 25, 2026  
 **Artifact Status:** **VERIFIED ON REAL HARDWARE**  
-**Log Reference:** [`out/hardware-m5-real-root-ramoops.log`](file:///Users/veerhooda/Downloads/OnePlus%202/out/hardware-m5-real-root-ramoops.log)  
+**Log Reference:** [`out/hardware-m5-real-root-ramoops.log`](../out/hardware-m5-real-root-ramoops.log)  
 
 ---
 
@@ -78,7 +78,7 @@ Rather than relying on closed-source Apple storage kexts (`AppleSDHCI.kext`, `IO
 ## 2. Partition & Data Protection Audit
 
 In accordance with strict safety protocols:
-1. **Full Backup Created:** Prior to writing, the original 2.5 GB Android system partition was compressed and backed up to [`backup/system.img.gz`](file:///Users/veerhooda/Downloads/OnePlus%202/backup/system.img.gz) (1.2 GB). The compressed archive was verified with `gzip -t` (0 errors).
+1. **Full Backup Created:** Prior to writing, the original 2.5 GB Android system partition was compressed and backed up to [`backup/system.img.gz`](../backup/system.img.gz) (1.2 GB). The compressed archive was verified with `gzip -t` (0 errors).
 2. **Explicit User Consent:** User authorization was obtained to target `/dev/block/bootdevice/by-name/system` (`mmcblk0p42`, 2.5 GB / 5,242,880 blocks).
 3. **Critical Boot Partitions Untouched:** Bootloader (`sbl1`, `aboot`), modem, RPM, trustzone, recovery, and persist partitions were left completely untouched.
 
@@ -86,7 +86,7 @@ In accordance with strict safety protocols:
 
 ## 3. Hardware Boot Log Evidence
 
-The following raw excerpt from [`out/hardware-m5-real-root-ramoops.log`](file:///Users/veerhooda/Downloads/OnePlus%202/out/hardware-m5-real-root-ramoops.log) verifies every stage of the persistent root boot:
+The following raw excerpt from [`out/hardware-m5-real-root-ramoops.log`](../out/hardware-m5-real-root-ramoops.log) verifies every stage of the persistent root boot:
 
 ```
 bsd_init: calling inittodr

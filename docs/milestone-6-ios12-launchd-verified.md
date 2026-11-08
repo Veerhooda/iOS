@@ -52,7 +52,7 @@
 
 ## 2. Hardware Ramoops Log Proof
 
-**Source Log:** [`out/hardware-ios12-run6-ramoops.log`](file:///Users/veerhooda/Downloads/OnePlus%202/out/hardware-ios12-run6-ramoops.log) (263 KB, 9,337 lines)
+**Source Log:** [`out/hardware-ios12-run6-ramoops.log`](../out/hardware-ios12-run6-ramoops.log) (263 KB, 9,337 lines)
 
 ### Excerpt: IOKit Registration & Early Boot Tasks
 ```

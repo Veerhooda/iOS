@@ -2,7 +2,7 @@
 
 ## TL;DR
 
-Apple iOS 12.5.7 runs reliably on the OnePlus 2 (`ONE A2003`, Snapdragon 810 / MSM8994). **Dual-core SMP (`cpus=2`) is fully operational**, cutting boot times from 30–80 minutes down to ~5–6 minutes. **Display continuity is solved (Milestone 9)**: with RGB alpha-masking and composite zero-fill frame preservation, the physical panel remains 100% illuminated (`panel_nz = 2000/2000`) across full 30-minute test cycles with SpringBoard and backboardd active. Dedicated `OP2Buttons` Consumer HID service delivers Home button events directly into SpringBoard's Mach runloop. Storage subsystem is 100% resilient with zero eMMC faults across millions of operations.
+Apple iOS 12.5.7 runs reliably on the OnePlus 2 (`ONE A2003`, Snapdragon 810 / MSM8994). **Dual-core SMP (`cpus=2`) is fully operational**, cutting boot times from 30–80 minutes down to ~5–6 minutes. **Display continuity is solved (Milestone 9)**: with RGB alpha-masking and composite zero-fill frame preservation, 100% of sampled panel pixels remained non-zero (`panel_nz = 2000/2000` sampled across the panel grid) across full 30-minute test cycles with SpringBoard and backboardd active. Dedicated `OP2Buttons` Consumer HID service delivers Home button events directly into SpringBoard's Mach runloop. Storage subsystem is 100% resilient with zero eMMC faults across millions of operations.
 
 ---
 
@@ -18,7 +18,7 @@ Apple iOS 12.5.7 runs reliably on the OnePlus 2 (`ONE A2003`, Snapdragon 810 / M
 | **M6** | Launchd & iOS 12.5.7 Daemons | Core OS bootstrap: `notifyd`, `fseventsd`, `syslogd`, `securityd`, `cfprefsd` | Run 115–130 |
 | **M7** | WindowServer & SpringBoard UI | `backboardd` + `SpringBoard` active, Mach IPC bootstrap, touch events processed | Run 135–150 |
 | **M8** | Physical Display Continuous Scan | MDSS continuous splash handoff, `fClientUI` surface scan (Surfaces 2..10) | Run 160–175 |
-| **M9** | Dual-Core SMP & Display Preservation | **Dual-core (`cpus=2`) online**, `panel_nz = 2000/2000`, `OP2Buttons` Home HID, 256MB jetsam floor | **Run 181–183** |
+| **M9** | Dual-Core SMP & Display Preservation | **Dual-core (`cpus=2`) online**, 100% sampled pixels lit (`panel_nz = 2000/2000`), `OP2Buttons` Home HID, 256MB jetsam floor | **Run 181–183** |
 
 ---
 
@@ -34,7 +34,7 @@ Apple iOS 12.5.7 runs reliably on the OnePlus 2 (`ONE A2003`, Snapdragon 810 / M
 - **Alpha Mask Fix:** `OP2Framebuffer.cpp` now evaluates `(row[x] & 0x00FFFFFF) != 0` to differentiate opaque black compositor background (`0xFF000000`) from blank memory buffers.
 - **Zero-Fill Guard:** In `AppleCLCD::present`, when `backboardd` submits all-zero composite target frames (Surface 5), the driver freezes existing non-zero panel memory (`fPixels`), preventing screen blanking.
 - **Metrics (Run 183):**
-  - **Sampled Non-Zero Ratio:** `panel_nz = 2000/2000` (100% continuously lit panel across entire 30-minute run).
+  - **Sampled Non-Zero Ratio:** `panel_nz = 2000/2000` (100% of sampled panel pixels remained non-zero across the entire 30-minute run).
   - **Presents:** 7,800+ hardware presents executed.
   - **Dynamic Surface Scanning:** Scans userland surfaces up to ID 63, downsampling SpringBoard Retina double-buffered frames (1242×2208) to native 1080×1920 BGR888 panel memory.
 
@@ -59,7 +59,7 @@ Apple iOS 12.5.7 runs reliably on the OnePlus 2 (`ONE A2003`, Snapdragon 810 / M
 | Subsystem | State | Current Implementation | Next Step |
 | :--- | :--- | :--- | :--- |
 | **SMP (Multi-Core)** | **VERIFIED (Dual-Core)** | CPU 0 + CPU 1 online (`cpus=2`) via mailbox & PSCI | Expand to 4-core Little Cluster (CPU 2 + CPU 3) |
-| **Display Panel** | **VERIFIED (Milestone 9)** | Continuous scanout, zero-fill freeze, `panel_nz = 2000/2000` | Implement hardware MDP5 pipe commit |
+| **Display Panel** | **VERIFIED (Milestone 9)** | Continuous scanout, zero-fill freeze, 100% sampled pixels lit (`panel_nz = 2000/2000`) | Implement hardware MDP5 pipe commit |
 | **Home Button / Navigation** | **VERIFIED** | Dedicated `OP2Buttons` Consumer HID (0x0C/0x40) | Refine gesture recognition in SpringBoard |
 | **Touchscreen (S3320)** | **OPERATIONAL** | Synaptics S3320 I2C driver + synthetic autotap queue | Tune I2C interrupt delivery for interactive latency |
 | **Storage (eMMC 5.0)** | **ROCK SOLID** | Polled SDHCI PIO with CMD12 abort & 3x retries | Implement SDHCI ADMA2 scatter-gather DMA |

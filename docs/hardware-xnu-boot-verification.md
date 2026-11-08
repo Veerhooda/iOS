@@ -20,7 +20,7 @@ The kernel brought up:
 
 ## 2. Line-by-Line Log Verification: Hardware vs QEMU
 
-| Execution Phase | Hardware ([`logs/hardware-m2-ramoops.log`](file:///Users/veerhooda/Downloads/OnePlus%202/logs/hardware-m2-ramoops.log)) | QEMU Virt ([`logs/qemu-m2-boot.log`](file:///Users/veerhooda/Downloads/OnePlus%202/logs/qemu-m2-boot.log)) | Status |
+| Execution Phase | Hardware ([`logs/hardware-m2-ramoops.log`](../logs/hardware-m2-ramoops.log)) | QEMU Virt ([`logs/qemu-m2-boot.log`](../logs/qemu-m2-boot.log)) | Status |
 | :--- | :--- | :--- | :--- |
 | **Shim Entry** | `Entry PC: 0x00080000, EL1` | `Entry PC: 0x50000000, EL1` | **Matched** (LK load vs QEMU load) |
 | **FDT Handshake** | `FDT: 0x01E00000 (0xD00DFEED)` | `FDT: 0x48A00000 (0xD00DFEED)` | **Matched** |
