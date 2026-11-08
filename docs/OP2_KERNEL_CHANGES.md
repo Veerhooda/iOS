@@ -90,13 +90,37 @@ This document indexes all commits and technical modifications made to the kernel
   - 3x automatic retry loop on CRC and timeout error conditions (`retry_ok=1`).
   - Zero read or write errors across 1,360,000+ operations in prolonged stability tests.
 
-### 6. Process Lifecycle & Crash Capture (`bsd/kern/kern_exit.c`, `osfmk/arm64/op2_snapshot.c`)
-- **Atomic Exit Ring:**
-  - Captures signal, exit code, PC, LR, and user-space backtraces for terminating processes into a persistent kernel ring buffer.
-- **Thread Snapshot Engine (`op2_snapshot.c`):**
-  - Automatically captures register state, Mach message headers, frame pointer call chains, and dyld image lists for key daemons (`SpringBoard`, `backboardd`, `mobileassetd`) immediately prior to reset deadline.
+### 7. Qualcomm RPM SMD Client Protocol & Adreno 430 Silicon Bring-Up (`bsd/dev/op2_rpm.c`, `iokit/Kernel/arm/OP2GPU.cpp`)
+- **RPM SMD Co-Processor Client:**
+  - Implements Qualcomm Shared Memory (SMEM) channel allocation (`cid=4`, type `0x0000020f`, `rpm_requests`).
+  - Two-phase SMD open handshake with stale bootloader packet synchronization.
+  - Votes on PMI8994 S2 (`VDD_GFX`) PMIC buck regulator in both Active Set (`set=0`) and Sleep Set (`set=1`) with verified RPM ACKs (`id_ack=2`, `id_ack=3`).
+- **MMSSCC Power & Clock Control:**
+  - Uncollapses Oxili GDSC power domains (`oxili_cx` and `oxili_gx`), confirming `PWR_ON` assertion within 10 µs.
+  - Enables MMSS branch clocks (`oxilicx_ahb`, `oxili_gfx3d`, `oxili_rbbmtimer`).
+- **Adreno 430 Silicon Initialization:**
+  - Core soft reset via `A4XX_RBBM_SW_RESET_CMD` (`status=0xc0004081`).
+  - Microcode load of 3,460 words (PM4 + PFP) directly to CP instruction memory via AHB MMIO.
+  - 32 KB contiguous DDR ringbuffer allocation with ARM64 `dc civac` PoC cache flushing.
+  - Verified DMA execution of `CP_ME_INIT` and `CP_NOP` canary packets.
+
+### 8. `OP2GPUUserClient` & Userspace Hardware Command Dispatch (`iokit/Kernel/arm/OP2GPU.cpp`, `OP2GPU.h`)
+- **Linux `msm_drm` ABI Compatibility:**
+  - Subclasses `IOUserClient` to provide ioctl-compatible external method dispatch for userland tasks:
+    - `kMsmGetParam`: Queries `MSM_PARAM_CHIP_ID` (`0x04030002` Adreno 430 v2.1), `MSM_PARAM_GMEM_SIZE` (`0x180000` / 1.5 MB), `MSM_PARAM_MAX_FREQ` (`600 MHz`), and timestamps.
+    - `kMsmGemNew`: Allocates contiguous physical DDR memory via `IOBufferMemoryDescriptor`.
+    - `kMsmGemInfo`: Returns physical IOVA address.
+    - `kMsmGemCpuPrep` / `kMsmGemCpuFini`: Point-of-Coherency cache flush with ARM64 `dc civac`.
+    - `kMsmGemSubmit`: Dispatches PM4 Type 3 indirect buffer packets (`CP_INDIRECT_BUFFER_PFE`) over DDR DMA.
+    - `kMsmWaitFence`: Synchronous fence completion tracking with microsecond polling.
+    - `kDrmGemClose`: Clean teardown of memory descriptors and fence synchronization.
+- **Mach VM Contiguous Memory Mapping:**
+  - Implements `clientMemoryForType` enabling userspace tasks to map physical GEM descriptors into task VM space via `IOConnectMapMemory64`.
+- **Unified `AGXAccelerator` Routing:**
+  - Overrides `AGXAccelerator::newUserClient` in `OP2Framebuffer.cpp` to forward user client connections to `OP2GPU`, linking Apple `Metal.framework` directly to physical Adreno silicon.
 
 ---
+
 
 ## Build Instructions
 

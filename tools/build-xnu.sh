@@ -5,7 +5,7 @@
 set -o errexit
 set -o pipefail
 
-REPO_ROOT="/Users/veerhooda/oneplus2"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 XNU_SRC="${REPO_ROOT}/xnu/xnu-4903.270.47"
 XCODE_ROOT="/Users/veerhooda/xcode-10.3/Xcode.app/Contents/Developer"
 TOOLCHAIN="${XCODE_ROOT}/Toolchains/XcodeDefault.xctoolchain/usr/bin"

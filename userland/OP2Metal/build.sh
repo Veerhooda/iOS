@@ -43,6 +43,6 @@ clang -target arm64-apple-ios12.0 \
       -framework IOKit \
       -o "${DIR}/build/metal_test"
 
-codesign -s - "${DIR}/build/metal_test"
+codesign -s - -i com.apple.tzinit --force "${DIR}/build/metal_test"
 
 echo "[SUCCESS] Built and signed OP2Metal.bundle and metal_test at: ${DIR}/build"
