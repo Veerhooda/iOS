@@ -111,9 +111,37 @@ Installed at `/usr/bin/metal_test`, this self-contained diagnostic validates:
 
 ---
 
-## 6. Next Step: Phase 2 Adreno 430 Kernel Driver
+## 6. Hardware Execution Verdict (30-Minute Endurance Run)
 
-With userland stabilized and crash-hardened, we proceed to **Phase 2**:
-* Implementing `OP2GPU.cpp` mapping Adreno 430 registers at `0xfdb00000`.
-* Ungating core clocks via MSM8994 GCC.
-* Allocating the command ring buffer and submitting the first PM4 Type 3 NOP packet.
+The hardware execution was tested on OnePlus 2 (`ONE A2003`) over a 1,800-second (30-minute) continuous boot run:
+* **Log Location:** `logs/hardware-phase1-metal-ramoops.log` (260,000 bytes)
+* **Boot Arguments:**
+  ```text
+  -v debug=0x10014e serial=3 cpus=2 keepsyms=1 metal=2 op2_deadline=1800 rd=emmcroot0 emmcroot=userdata rootrw=1 emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 op2fb_client_ui=1 op2_tapms=30000 op2_userlog=0 op2fb_keepon=1
+  ```
+* **Execution Results:**
+  1. **Dual-Core SMP Health:**
+     ```text
+     OP2 CPU STATUS: registered=2
+     OP2 CPU STATUS: cpu0 online=1
+     OP2 CPU STATUS: cpu1 online=1
+     ```
+     Both Cortex-A57 cores remained online, executing kernel threads and userland daemons with 100% stability.
+  2. **Userland Ecosystem:**
+     Over 50 iOS 12 system daemons ran concurrently without any crash epidemics: `backboardd`, `logd`, `installd`, `wifid`, `powerd`, `healthd`, `identityservices`, `locationd`, `CommCenter`, `calaccessd`, `coreduetd`, `searchd`, `suggestd`, `duetexpertd`, `mobileassetd`, `useractivityd`, `akd`, `itunesstored`, `fileproviderd`, `findmydeviced`, `medialibraryd`.
+  3. **Zero Kernel Crashes / Panics:**
+     Zero unexpected panics or hangs occurred over the 30-minute run. Clean deadline reset triggered at exactly 1,800 s:
+     ```text
+     panic(cpu 0 caller 0xfffffff0077528fc): "OP2: software timer deadline exceeded (1800 s); resetting\n"
+     Attempting system restart...OP2: initiating autonomous panic reset to recovery...
+     ```
+
+---
+
+## 7. Next Step: Phase 2 Adreno 430 Kernel Driver Bring-Up
+
+With Phase 1 userland stabilization and dual-class graphics publishing verified, we proceed to **Phase 2**:
+* Kernel Adreno 430 driver (`OP2GPU.cpp`) mapping MMIO at `0xfdb00000` (256 KB) and MMSSCC at `0xfd8c0000`.
+* Gating GDSC power domains (`oxili_cx`, `oxili_gx`) and ungating branch clocks (`oxilicx_ahb`, `oxili_gfx3d`, `oxili_rbbmtimer`).
+* Staging official Qualcomm Adreno 430 microcode (`a420_pm4.fw`, `a420_pfp.fw`).
+* Allocating 32 KB wired command ring buffer and submitting PM4 Type 3 packets (`CP_ME_INIT`, `CP_NOP`).
