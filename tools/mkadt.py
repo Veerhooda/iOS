@@ -126,8 +126,9 @@ def build(seed=None, qemu=False):
         node('asmb', [ph(), ('lp-sip0', u64(0x6f)), ('lp-sip1', u32(1))])
     ])
 
-    # CPUs: cpu0 only (SMP parked; run134 hung the phone).
-    # Re-add _cpu_node(1) when resuming multicore (SMP plan Gap 3).
+    # CPUs: cpu0 (boot) + cpu1 (SMP step 1). Extra cores are gated by the
+    # `cpus=N` boot-arg (ml_parse_cpu_topology caps avail_cpus), so cpus=1
+    # keeps single-core behavior with this ADT.
     def _cpu_node(idx):
         return node('cpu%d' % idx, [
             ph(),
@@ -141,7 +142,7 @@ def build(seed=None, qemu=False):
             ('cluster-core-id', u32(idx)),
             ('l2-cache-id', u32(0)),
             ('l3-cache-id', u32(0)),
-            ('state', cstr('running')),
+            ('state', cstr('running' if idx == 0 else 'off')),
             ('timebase-frequency', u32(timebase)),
             ('clock-frequency', u32(1555200000)),
             ('bus-frequency', u32(100000000)),
@@ -149,7 +150,7 @@ def build(seed=None, qemu=False):
             ('peripheral-frequency', u32(timebase)),
             ('fixed-frequency', u32(timebase)),
         ])
-    cpu_nodes = [_cpu_node(0)]
+    cpu_nodes = [_cpu_node(0), _cpu_node(1)]
     cpus = node('cpus', [ph(), ('#address-cells', u32(1)),
                          ('#size-cells', u32(0))], cpu_nodes)
 

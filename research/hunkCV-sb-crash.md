@@ -79,3 +79,70 @@ daemon inits cleanly and replies, SB drives past BootUI to UI.
 Fallback (if hang persists): MA client fail-fast patch (audited MA
 0x187aed9c4 wrapper + 0x187aeabc8 caller; both normal AND error paths
 deref the reply, so patch must be higher or forge XPC_ERROR; see chat).
+
+## Loop-27 (run174): hang returns, daemon exonerated, hunkMA designed
+- trim9 + print-budget kernel: full TL kept (107 lines min6-112!), eMMC
+  0 fails with 15 saves (retry_ok=3, wr_retry_ok=12). assetsd gone (0).
+- BUT surface 2 again (2,472 presents): SB at the IDENTICAL MA XPC wait
+  (trap-relative 0x7095900, 3rd run). Budget is log-only; the trigger is
+  the assetsd park OR input timing (query is input/boot race).
+- mobileassetd pid112 HEALTHY (main runloop idle, 6 threads): the message
+  never arrives (launchd holds it; daemon never got it). Hang is in the
+  delivery/wait, not daemon health. Unpark/restore cannot fix it.
+- hunkMA (tools/hunkMA.py): skip `[MAAssetQuery runQueryAndReturnError:]`
+  in AXUtils (selector confirmed via methname cstring). Site AX+0x6030:
+  mov x0,x20 + bl -> mov x0,xzr + nop. Out-param pre-zeroed; post-call
+  retains nil and takes the existing cbz graceful path (pure ObjC
+  nil-messaging, audited through 0x190b8619c). "Found nothing" = true.
+- Loop-28: trim10 = trim9 + hunkMA (+ AT pref if pull confirms it).
+
+## AssistiveTouch bake, done properly (loop-28/trim10)
+- Old attempt (data_ark.plist, 5 copies) was a guess; new one is grounded:
+  pulled the live 7.2GB userdata image and read what iOS itself wrote.
+- Ground truth: /var/mobile/Library/Preferences/com.apple.Accessibility.plist
+  (mobile, mode 600), plain key `AssistiveTouchEnabled` as INTEGER
+  (NOT the AXS* strings: those are notifyd keys like
+  _kAXSAssistiveTouchEnabledNotification, not plist keys).
+- Live file had all-0 defaults (user never re-toggled in loop-27); baked
+  file = the live system-written file with AssistiveTouchEnabled 0->1
+  (integer, via plistlib), plutil -lint OK, chmod 600 (uid already 501).
+- fixA lacks the file (created on first boot) -> bake CREATES it.
+- Failure mode if wrong: AT stays off (status quo); a data-only plist
+  cannot break boot. Fallback: reflash trim9 (rebuild from fixA).
+
+## Loop-28 (run175): hunkMA WORKED, next hang in same MA trap (TTS path)
+- trim10+hunkMA on device (verified bytes: QC/CV/MA all patched): SB main
+  NO LONGER in the AX path. run174 stack: AX+0x6038 -> AS runQuery...;
+  run175 stack: TextToSpeech -> 0x1098?? -> AS runQueryAndReturnError:+0x14
+  -> runQueryForInfoReturnError:+0x9c -> libxpc+0xa850 sync -> mach_msg.
+  Same trap, different caller. 24 one-shot deaths, eMMC 0 fails
+  (retry_ok=4, wr_retry_ok=5), 2471 presents surface-2, panel lit,
+  AUTOHOME/AUTOSWIPE 46 each (kernel-side fine; UI parked so no effect),
+  assistivetouchd launched (plist AssistiveTouchEnabled=1 on device).
+- Lesson: call-site whack-a-mole cannot win; patch MA itself (hunkMA2).
+- Park method ground-truthed: LaunchDaemons plist DELETED (binaries stay).
+
+## hunkMA2 (tools/hunkMA2.py): stub 4 sync-query entries in MobileAsset
+- Sites (static VA, 2 slots each -> mov x0,xzr; ret):
+  AS runQueryAndReturnError:  0x187ae86e8 '@'->nil (observed run174+175)
+  AS runQueryForInfoReturnError: 0x187ae8414 '@'->nil (inner frame)
+  MA queryMetaDataSync        0x187ae5fbc 'q'->0 (sync xpc at +0x210)
+  MA queryInstalledAssetIds   0x187ae5c88 'q'->0 (sync xpc at +0x100)
+- Completeness: scanned all MA __text direct-bl to libxpc; 0x180b1c850 is
+  the sync primitive (all *Sync methods + our hang call it). Download/purge
+  Sync methods left alone (not boot-path).
+- Applied SURGICALLY on device (tools/op2hfs.py HFS+/HFSX reader/writer;
+  cache contiguous 1 ext @blk158603): 8B/site, read-back verified,
+  neighbors intact. Zero rebuild/reflash risk; trim10 otherwise verbatim.
+- Loop-29: same kernel/cmdline, 2h; predicts SB past BootUI to UI.
+
+## Loop-29 (run176): hunkMA2 UNBLOCKS to full UI; dataaccessd storm floods ring
+- 38,390 presents surface-9 lit; user drove real apps (Photos, Settings).
+- eMMC 1.9M reads 0 fails (3 saves). SB pid41 alive.
+- dataaccessd SIGABRT x311 + cs_invalid_page x326 (pages misattributed by
+  op2sym to libswiftsimd+0x94M -- actually main-executable range; NOT the
+  hunk sites). Abort pc libsystem_kernel+0x230dc via pthread+0x2094.
+  Storm evicted Photos/Settings deaths from the 256-slot ring (771 total).
+- Fix: exit ring follows the print-budget verdict (first 24/comm recorded,
+  overflow counted as dropped; crash state still consumed). Loop-30 with
+  this kernel to capture Photos/Settings sites while user drives.
