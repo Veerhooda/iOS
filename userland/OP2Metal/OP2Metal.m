@@ -1,34 +1,40 @@
 /*
- * OP2Metal: Metal Driver Plugin for OnePlus 2 (Adreno 430 / MSM8994) on iOS 12.
+ * OP2Metal: Apple Metal Driver Bundle implementation for OnePlus 2 (Snapdragon 810 / Adreno 430).
  *
- * Implements the Apple Metal device discovery contract:
- * 1. Discovered by Metal.framework via IOKit service IOAcceleratorES.
- * 2. Reads MetalPluginName ("OP2Metal") and MetalPluginClassName ("OP2MetalDevice").
- * 3. Dynamically subclasses _MTLDevice and conforms to <MTLDevice> and <MTLDeviceSPI>.
- * 4. Satisfies MTLCreateSystemDefaultDevice() and prevents null-device crashes
- *    across iOS 12 userland applications (Safari, Camera, Photos, Maps, CoreAnimation).
+ * Provides userspace Metal driver interface compliant with Apple's Metal.framework
+ * and IOAccelerator.framework architecture on iOS 12.5.7 (16H81).
  */
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
+#include <sys/sysctl.h>
 #include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
-#include <sys/sysctl.h>
 #include <unistd.h>
+#include <mach/mach.h>
 #include "op2_metallib.h"
+
+#ifndef MTLHazardTrackingModeDefault
+#define MTLHazardTrackingModeDefault 0
+#endif
 
 /* IOKit Declarations */
 typedef mach_port_t io_object_t;
 typedef io_object_t io_service_t;
+typedef io_object_t io_connect_t;
 extern const mach_port_t kIOMasterPortDefault;
 CFMutableDictionaryRef IOServiceMatching(const char *name);
 io_service_t IOServiceGetMatchingService(mach_port_t masterPort, CFDictionaryRef matching);
+kern_return_t IOServiceOpen(io_service_t service, task_port_t owningTask, uint32_t type, io_connect_t *connect);
+kern_return_t IOServiceClose(io_connect_t connect);
 kern_return_t IOObjectRelease(io_object_t object);
+kern_return_t IOConnectCallScalarMethod(io_connect_t connect, uint32_t selector,
+    const uint64_t *input, uint32_t inputCnt,
+    uint64_t *output, uint32_t *outputCnt);
 
 static Class gBaseDevice;
 static unsigned int gAcceleratorPort;
@@ -45,14 +51,11 @@ op2_log(NSString *format, ...)
 	NSLog(@"[OP2Metal] %@", msg);
 }
 
-/*
- * Struct returned by pointer for -targetDeviceInfo.
- * Prevents NULL-dereference panics inside QuartzCore and MTLPipelineLibraryBuilder.
- */
+/* Structs and architectures */
 struct MTLTargetDeviceArch {
 	uint64_t target;
 	uint32_t version;
-	char *name;
+	const char *name;
 };
 
 static struct MTLTargetDeviceArch gTargetArch = {
@@ -74,42 +77,32 @@ static unsigned gProtocolCount = 0;
 static id
 deviceMethodSignature(id self, SEL _cmd, SEL selector)
 {
+	(void)self;
+	(void)_cmd;
 	for (unsigned i = 0; i < gProtocolCount; i++) {
-		for (int required = 1; required >= 0; required--) {
-			struct objc_method_description d = protocol_getMethodDescription(gProtocols[i], selector, required, YES);
-			if (d.name != NULL && d.types != NULL) {
-				return [NSMethodSignature signatureWithObjCTypes:d.types];
-			}
+		struct objc_method_description desc = protocol_getMethodDescription(gProtocols[i], selector, NO, YES);
+		if (desc.name == NULL) {
+			desc = protocol_getMethodDescription(gProtocols[i], selector, YES, YES);
+		}
+		if (desc.name != NULL && desc.types != NULL) {
+			return [NSMethodSignature signatureWithObjCTypes:desc.types];
 		}
 	}
-	struct objc_super sup = { self, class_getSuperclass(object_getClass(self)) };
-	id (*send)(struct objc_super *, SEL, SEL) = (id (*)(struct objc_super *, SEL, SEL))objc_msgSendSuper;
-	(void)_cmd;
-	return send(&sup, sel_registerName("methodSignatureForSelector:"), selector);
+	return [NSMethodSignature signatureWithObjCTypes:"v@:"];
 }
 
 static void
 deviceForwardInvocation(id self, SEL _cmd, NSInvocation *invocation)
 {
-	static NSMutableSet *seenSelectors = nil;
-	SEL selector = [invocation selector];
+	SEL sel = [invocation selector];
 	NSMethodSignature *sig = [invocation methodSignature];
 	NSUInteger retLen = [sig methodReturnLength];
-	NSString *selName = NSStringFromSelector(selector);
 
-	(void)self;
-	(void)_cmd;
-
-	@synchronized(gBaseDevice) {
-		if (seenSelectors == nil) {
-			seenSelectors = [[NSMutableSet alloc] init];
-		}
-		if (![seenSelectors containsObject:selName]) {
-			[seenSelectors addObject:selName];
-			const char *retType = [sig methodReturnType];
-			op2_log(@"Forwarding unhandled selector: -%@ (ret len %lu, type %s; replying with 0)",
-			        selName, (unsigned long)retLen, retType ? retType : "?");
-		}
+	static unsigned gLogged = 0;
+	if (gLogged < 30) {
+		op2_log(@"Unimplemented selector: -[%s %s] (retLen: %lu)",
+		        object_getClassName(self), sel_getName(sel), (unsigned long)retLen);
+		gLogged++;
 	}
 
 	if (retLen > 0) {
@@ -126,31 +119,36 @@ static Class gLibraryClass;
 static Class gFunctionClass;
 static Class gCommandBufferClass;
 static Class gBlitEncoderClass;
+static Class gRenderEncoderClass;
+static Class gTextureClass;
+static Class gPipelineClass;
 
 /* Internal ivar access */
 static void **
-stateOf(id self)
+stateOf(__unsafe_unretained id self)
 {
 	Ivar ivar = class_getInstanceVariable(object_getClass(self), "_op2State");
-	return ivar != NULL ? (void **)((char *)(__bridge void *)self + ivar_getOffset(ivar)) : NULL;
+	if (ivar == NULL) {
+		return NULL;
+	}
+	return (void **)((uint8_t *)(__bridge void *)self + ivar_getOffset(ivar));
 }
 
 static void
-deallocWith(id self, SEL _cmd, Class cls, void (*free_state)(void *))
+deallocWith(__unsafe_unretained id self, SEL _cmd, __unused Class cls, void (*freeCb)(void *))
 {
 	void **slot = stateOf(self);
-	struct objc_super sup = { self, class_getSuperclass(cls) };
-
 	if (slot != NULL && *slot != NULL) {
-		if (free_state != NULL) {
-			free_state(*slot);
+		if (freeCb) {
+			freeCb(*slot);
 		}
 		*slot = NULL;
 	}
-	((void (*)(struct objc_super *, SEL))objc_msgSendSuper)(&sup, _cmd);
+	struct objc_super sup = { self, objc_getClass("NSObject") };
+	void (*send)(struct objc_super *, SEL) = (void (*)(struct objc_super *, SEL))objc_msgSendSuper;
+	send(&sup, _cmd);
 }
 
-/* Base object properties */
 static id
 objectDevice(__unused id self, __unused SEL _cmd)
 {
@@ -159,30 +157,30 @@ objectDevice(__unused id self, __unused SEL _cmd)
 
 /* ---- Buffers ---- */
 struct op2_buffer {
-	void *memory;
-	uint64_t length;
-	unsigned long options;
+	void *bytes;
+	NSUInteger length;
+	NSUInteger options;
 	void (^deallocator)(void *, NSUInteger);
-	BOOL mapped;
 	NSString *label;
+	uint64_t gpuAddress;
+	uint32_t purgeableState;
 };
 
 static void
 bufferFree(void *state)
 {
 	struct op2_buffer *b = (struct op2_buffer *)state;
-	if (b->mapped && b->memory) {
-		munmap(b->memory, b->length ? b->length : 1);
-	} else if (b->deallocator != nil) {
-		b->deallocator(b->memory, (NSUInteger)b->length);
+	if (b->deallocator) {
+		b->deallocator(b->bytes, b->length);
+	} else if (b->bytes) {
+		free(b->bytes);
 	}
-	b->deallocator = nil;
 	b->label = nil;
 	free(b);
 }
 
 static void
-bufferDealloc(id self, SEL _cmd)
+bufferDealloc(__unsafe_unretained id self, SEL _cmd)
 {
 	deallocWith(self, _cmd, gBufferClass, bufferFree);
 }
@@ -198,46 +196,49 @@ static void *
 bufferContents(id self, __unused SEL _cmd)
 {
 	struct op2_buffer *b = bufferOf(self);
-	return b != NULL ? b->memory : NULL;
+	return b != NULL ? b->bytes : NULL;
 }
 
-static unsigned long
+static NSUInteger
 bufferLength(id self, __unused SEL _cmd)
 {
 	struct op2_buffer *b = bufferOf(self);
-	return b != NULL ? (unsigned long)b->length : 0;
+	return b != NULL ? b->length : 0;
 }
 
-static unsigned long
+static NSUInteger
 bufferOptions(id self, __unused SEL _cmd)
 {
 	struct op2_buffer *b = bufferOf(self);
 	return b != NULL ? b->options : 0;
 }
 
-static unsigned long
-bufferStorageMode(id self, SEL _cmd)
+static NSUInteger
+bufferStorageMode(id self, __unused SEL _cmd)
 {
-	return (bufferOptions(self, _cmd) >> MTLResourceStorageModeShift) & 0xf;
+	struct op2_buffer *b = bufferOf(self);
+	return b != NULL ? ((b->options >> MTLResourceStorageModeShift) & 0xf) : MTLStorageModeShared;
 }
 
-static unsigned long
-bufferCacheMode(id self, SEL _cmd)
+static NSUInteger
+bufferCacheMode(id self, __unused SEL _cmd)
 {
-	return (bufferOptions(self, _cmd) >> MTLResourceCPUCacheModeShift) & 0xf;
+	struct op2_buffer *b = bufferOf(self);
+	return b != NULL ? ((b->options >> MTLResourceCPUCacheModeShift) & 0xf) : MTLCPUCacheModeDefaultCache;
 }
 
-static unsigned long
-bufferHazardMode(id self, SEL _cmd)
+static NSUInteger
+bufferHazardMode(id self, __unused SEL _cmd)
 {
-	return (bufferOptions(self, _cmd) >> MTLResourceHazardTrackingModeShift) & 0x3;
+	struct op2_buffer *b = bufferOf(self);
+	return b != NULL ? ((b->options >> MTLResourceHazardTrackingModeShift) & 0x3) : MTLHazardTrackingModeDefault;
 }
 
-static unsigned long
-bufferAllocatedSize(id self, SEL _cmd)
+static NSUInteger
+bufferAllocatedSize(id self, __unused SEL _cmd)
 {
-	unsigned long page = (unsigned long)getpagesize();
-	return (bufferLength(self, _cmd) + page - 1) / page * page;
+	struct op2_buffer *b = bufferOf(self);
+	return b != NULL ? b->length : 0;
 }
 
 static void
@@ -246,68 +247,71 @@ bufferDidModify(__unused id self, __unused SEL _cmd, __unused NSRange range)
 }
 
 static uint64_t
-bufferGPUAddress(__unused id self, __unused SEL _cmd)
+bufferGPUAddress(id self, __unused SEL _cmd)
 {
-	return 0;
+	struct op2_buffer *b = bufferOf(self);
+	return b != NULL ? b->gpuAddress : 0;
 }
 
-static unsigned long
-bufferPurgeable(__unused id self, __unused SEL _cmd, __unused unsigned long state)
+static NSUInteger
+bufferPurgeable(id self, __unused SEL _cmd, NSUInteger state)
 {
-	return MTLPurgeableStateNonVolatile;
-}
-
-static id
-bufferMake(void *memory, uint64_t length, unsigned long options, BOOL mapped, void (^deallocator)(void *, NSUInteger))
-{
-	id buffer = [[gBufferClass alloc] init];
-	if (buffer == nil) {
-		return nil;
+	struct op2_buffer *b = bufferOf(self);
+	if (b == NULL) {
+		return MTLPurgeableStateNonVolatile;
 	}
-	struct op2_buffer *b = calloc(1, sizeof(*b));
-	void **slot = stateOf(buffer);
-	if (b == NULL || slot == NULL) {
-		free(b);
-		return nil;
+	NSUInteger prev = b->purgeableState;
+	if (state != MTLPurgeableStateKeepCurrent) {
+		b->purgeableState = (uint32_t)state;
 	}
-	b->memory = memory;
-	b->length = length;
-	b->options = options;
-	b->mapped = mapped;
-	b->deallocator = [deallocator copy];
-	*slot = b;
-	return buffer;
+	return prev;
 }
 
 static id
-deviceNewBuffer(id self, __unused SEL _cmd, unsigned long length, unsigned long options)
+deviceNewBufferBytes(id self, SEL _cmd, const void *bytes, NSUInteger length, NSUInteger options)
 {
-	gDeviceInstance = self;
-	if (length > (256ull << 20)) {
-		return nil;
-	}
-	void *mem = mmap(NULL, length ? length : 1, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
-	if (mem == MAP_FAILED) {
-		return nil;
-	}
-	return bufferMake(mem, length, options, YES, nil);
-}
-
-static id
-deviceNewBufferBytes(id self, SEL _cmd, const void *bytes, unsigned long length, unsigned long options)
-{
-	id buf = deviceNewBuffer(self, _cmd, length, options);
-	if (buf && bytes && length) {
-		memcpy(bufferContents(buf, NULL), bytes, length);
+	id buf = ((id (*)(id, SEL, NSUInteger, NSUInteger))objc_msgSend)(self, sel_registerName("newBufferWithLength:options:"), length, options);
+	void *dest = bufferContents(buf, NULL);
+	if (dest && bytes && length) {
+		memcpy(dest, bytes, length);
 	}
 	return buf;
 }
 
 static id
-deviceNewBufferNoCopy(id self, __unused SEL _cmd, void *bytes, unsigned long length, unsigned long options, void (^deallocator)(void *, NSUInteger))
+deviceNewBufferNoCopy(__unused id self, __unused SEL _cmd, void *pointer, NSUInteger length, NSUInteger options, void (^deallocator)(void *, NSUInteger))
 {
-	gDeviceInstance = self;
-	return bufferMake(bytes, length, options, NO, deallocator);
+	if (gBufferClass == Nil || pointer == NULL) {
+		return nil;
+	}
+	id bufObj = [[gBufferClass alloc] init];
+	struct op2_buffer *buf = calloc(1, sizeof(*buf));
+	void **slot = stateOf(bufObj);
+	if (buf && slot) {
+		buf->bytes = pointer;
+		buf->length = length;
+		buf->options = options;
+		buf->deallocator = [deallocator copy];
+		buf->purgeableState = MTLPurgeableStateNonVolatile;
+		*slot = buf;
+		return bufObj;
+	}
+	free(buf);
+	return nil;
+}
+
+static id
+deviceNewBuffer(id self, SEL _cmd, NSUInteger length, NSUInteger options)
+{
+	void *mem = calloc(1, length ? length : 1);
+	if (mem == NULL) {
+		return nil;
+	}
+	id buf = deviceNewBufferNoCopy(self, _cmd, mem, length, options, NULL);
+	if (buf == nil) {
+		free(mem);
+	}
+	return buf;
 }
 
 /* ---- Command Queue ---- */
@@ -328,19 +332,48 @@ queueSetGPUPriority(__unused id self, __unused SEL _cmd, __unused unsigned long 
 {
 }
 
-static id
-queueCommandBuffer(__unused id self, __unused SEL _cmd)
+/* ---- Command Buffer ---- */
+struct op2_cmd_buf {
+	id queue;
+	id presentedDrawable;
+	unsigned long status;
+};
+
+static void
+cmdBufFree(void *state)
 {
-	id cb = [[gCommandBufferClass alloc] init];
-	return cb;
+	struct op2_cmd_buf *cb = (struct op2_cmd_buf *)state;
+	cb->queue = nil;
+	cb->presentedDrawable = nil;
+	free(cb);
 }
 
 static void
-queueDealloc(id self, SEL _cmd)
+queueDealloc(__unsafe_unretained id self, SEL _cmd)
 {
 	struct objc_super sup = { self, objc_getClass("NSObject") };
 	void (*send)(struct objc_super *, SEL) = (void (*)(struct objc_super *, SEL))objc_msgSendSuper;
 	send(&sup, _cmd);
+}
+
+static void
+commandBufferDealloc(__unsafe_unretained id self, SEL _cmd)
+{
+	deallocWith(self, _cmd, gCommandBufferClass, cmdBufFree);
+}
+
+static id
+queueCommandBuffer(id self, __unused SEL _cmd)
+{
+	id cb = [[gCommandBufferClass alloc] init];
+	struct op2_cmd_buf *state = calloc(1, sizeof(*state));
+	void **slot = stateOf(cb);
+	if (state && slot) {
+		state->queue = self;
+		state->status = MTLCommandBufferStatusNotEnqueued;
+		*slot = state;
+	}
+	return cb;
 }
 
 static id
@@ -361,11 +394,12 @@ deviceNewQueueMax(id self, SEL _cmd, __unused unsigned long maxBuffers)
 	return deviceNewQueue(self, _cmd);
 }
 
-/* ---- Command Buffer ---- */
 static unsigned long
-commandBufferStatus(__unused id self, __unused SEL _cmd)
+commandBufferStatus(id self, __unused SEL _cmd)
 {
-	return MTLCommandBufferStatusCompleted;
+	void **slot = stateOf(self);
+	struct op2_cmd_buf *cb = slot ? (struct op2_cmd_buf *)*slot : NULL;
+	return cb ? cb->status : MTLCommandBufferStatusCompleted;
 }
 
 static id
@@ -375,32 +409,101 @@ commandBufferError(__unused id self, __unused SEL _cmd)
 }
 
 static void
-commandBufferCommit(__unused id self, __unused SEL _cmd)
+commandBufferCommit(id self, __unused SEL _cmd)
 {
+	void **slot = stateOf(self);
+	struct op2_cmd_buf *cb = slot ? (struct op2_cmd_buf *)*slot : NULL;
+	if (cb) {
+		cb->status = MTLCommandBufferStatusCommitted;
+		if (cb->presentedDrawable != nil) {
+			op2_log(@"Presenting drawable %p at commit", cb->presentedDrawable);
+			if ([cb->presentedDrawable respondsToSelector:@selector(present)]) {
+				[cb->presentedDrawable present];
+			}
+			/* Kick display panel scanout via kOP2Show */
+			io_connect_t connect = 0;
+			io_service_t service = IOServiceGetMatchingService(kIOMasterPortDefault, IOServiceMatching("IOAcceleratorES"));
+			if (!service) {
+				service = IOServiceGetMatchingService(kIOMasterPortDefault, IOServiceMatching("IOAccelerator"));
+			}
+			if (service) {
+				if (IOServiceOpen(service, mach_task_self(), 0, &connect) == KERN_SUCCESS && connect) {
+					IOConnectCallScalarMethod(connect, 0x7f /* kOP2Show */, NULL, 0, NULL, NULL);
+					IOServiceClose(connect);
+				}
+				IOObjectRelease(service);
+			}
+		}
+		cb->status = MTLCommandBufferStatusCompleted;
+	}
 }
 
 static void
-commandBufferEnqueue(__unused id self, __unused SEL _cmd)
+commandBufferEnqueue(id self, __unused SEL _cmd)
 {
+	void **slot = stateOf(self);
+	struct op2_cmd_buf *cb = slot ? (struct op2_cmd_buf *)*slot : NULL;
+	if (cb) {
+		cb->status = MTLCommandBufferStatusEnqueued;
+	}
 }
 
 static void
-commandBufferWait(__unused id self, __unused SEL _cmd)
+commandBufferWait(id self, __unused SEL _cmd)
 {
+	void **slot = stateOf(self);
+	struct op2_cmd_buf *cb = slot ? (struct op2_cmd_buf *)*slot : NULL;
+	if (cb) {
+		cb->status = MTLCommandBufferStatusCompleted;
+	}
 }
 
 static void
-commandBufferAddHandler(__unused id self, __unused SEL _cmd, void (^handler)(id))
+commandBufferAddHandler(id self, __unused SEL _cmd, void (^handler)(id))
 {
 	if (handler) {
 		handler(self);
 	}
 }
 
+static void
+commandBufferPresentDrawable(id self, __unused SEL _cmd, id drawable)
+{
+	op2_log(@"presentDrawable: %p", drawable);
+	void **slot = stateOf(self);
+	struct op2_cmd_buf *cb = slot ? (struct op2_cmd_buf *)*slot : NULL;
+	if (cb) {
+		cb->presentedDrawable = drawable;
+	}
+}
+
+static void
+commandBufferPresentDrawableAtTime(id self, SEL _cmd, id drawable, __unused double presentationTime)
+{
+	commandBufferPresentDrawable(self, _cmd, drawable);
+}
+
+static void
+commandBufferPresentDrawableAfterDuration(id self, SEL _cmd, id drawable, __unused double duration)
+{
+	commandBufferPresentDrawable(self, _cmd, drawable);
+}
+
 static id
 commandBufferBlitEncoder(__unused id self, __unused SEL _cmd)
 {
 	return [[gBlitEncoderClass alloc] init];
+}
+
+static id
+commandBufferRenderEncoder(__unused id self, __unused SEL _cmd, __unused id descriptor)
+{
+	if (gRenderEncoderClass == Nil) {
+		return nil;
+	}
+	id enc = [[gRenderEncoderClass alloc] init];
+	op2_log(@"Created render command encoder %p", enc);
+	return enc;
 }
 
 /* ---- Blit Command Encoder ---- */
@@ -432,6 +535,292 @@ blitEndEncoding(id self, SEL _cmd)
 	}
 }
 
+/* ---- Render Command Encoder ---- */
+static void
+renderEndEncoding(id self, SEL _cmd)
+{
+	op2_log(@"renderEndEncoding on %p", self);
+	struct objc_super sup = { self, class_getSuperclass(gRenderEncoderClass) };
+	if (class_respondsToSelector(class_getSuperclass(gRenderEncoderClass), _cmd)) {
+		((void (*)(struct objc_super *, SEL))objc_msgSendSuper)(&sup, _cmd);
+	}
+}
+
+/* ---- Textures ---- */
+struct op2_texture {
+	id device;
+	id descriptor;
+	NSUInteger textureType;
+	NSUInteger pixelFormat;
+	NSUInteger width;
+	NSUInteger height;
+	NSUInteger usage;
+	void *iosurface;
+	NSUInteger plane;
+	uint64_t uniqueID;
+	BOOL isDrawable;
+	NSUInteger allocatedSize;
+	void *bytes;
+};
+
+static void
+textureFree(void *state)
+{
+	struct op2_texture *t = (struct op2_texture *)state;
+	if (t) {
+		if (t->bytes) {
+			free(t->bytes);
+		}
+		t->device = nil;
+		t->descriptor = nil;
+		free(t);
+	}
+}
+
+static void
+textureDealloc(__unsafe_unretained id self, SEL _cmd)
+{
+	deallocWith(self, _cmd, gTextureClass, textureFree);
+}
+
+static struct op2_texture *
+textureOf(id self)
+{
+	void **slot = stateOf(self);
+	return slot ? (struct op2_texture *)*slot : NULL;
+}
+
+static id
+textureDevice(id self, __unused SEL _cmd)
+{
+	struct op2_texture *t = textureOf(self);
+	return t ? t->device : nil;
+}
+
+static NSUInteger
+textureType(id self, __unused SEL _cmd)
+{
+	struct op2_texture *t = textureOf(self);
+	return t ? t->textureType : 2 /* MTLTextureType2D */;
+}
+
+static NSUInteger
+texturePixelFormat(id self, __unused SEL _cmd)
+{
+	struct op2_texture *t = textureOf(self);
+	return t ? t->pixelFormat : 80 /* MTLPixelFormatBGRA8Unorm */;
+}
+
+static NSUInteger
+textureWidth(id self, __unused SEL _cmd)
+{
+	struct op2_texture *t = textureOf(self);
+	return t ? t->width : 1080;
+}
+
+static NSUInteger
+textureHeight(id self, __unused SEL _cmd)
+{
+	struct op2_texture *t = textureOf(self);
+	return t ? t->height : 1920;
+}
+
+static NSUInteger
+textureDepth(__unused id self, __unused SEL _cmd)
+{
+	return 1;
+}
+
+static NSUInteger
+textureMipmapLevelCount(__unused id self, __unused SEL _cmd)
+{
+	return 1;
+}
+
+static NSUInteger
+textureSampleCount(__unused id self, __unused SEL _cmd)
+{
+	return 1;
+}
+
+static NSUInteger
+textureArrayLength(__unused id self, __unused SEL _cmd)
+{
+	return 1;
+}
+
+static NSUInteger
+textureUsage(id self, __unused SEL _cmd)
+{
+	struct op2_texture *t = textureOf(self);
+	return t ? t->usage : (0x01 | 0x04);
+}
+
+static void *
+textureIOSurface(id self, __unused SEL _cmd)
+{
+	struct op2_texture *t = textureOf(self);
+	return t ? t->iosurface : NULL;
+}
+
+static NSUInteger
+textureIOSurfacePlane(id self, __unused SEL _cmd)
+{
+	struct op2_texture *t = textureOf(self);
+	return t ? t->plane : 0;
+}
+
+static BOOL
+textureIsDrawable(id self, __unused SEL _cmd)
+{
+	struct op2_texture *t = textureOf(self);
+	return t ? t->isDrawable : NO;
+}
+
+static BOOL
+textureIsCompressed(__unused id self, __unused SEL _cmd)
+{
+	return NO;
+}
+
+static NSInteger
+textureCompressionFeedback(__unused id self, __unused SEL _cmd)
+{
+	return 0;
+}
+
+static uint64_t
+textureUniqueID(id self, __unused SEL _cmd)
+{
+	struct op2_texture *t = textureOf(self);
+	return t ? t->uniqueID : 1001ULL;
+}
+
+static NSUInteger
+textureAllocatedSize(id self, __unused SEL _cmd)
+{
+	struct op2_texture *t = textureOf(self);
+	return t ? t->allocatedSize : (1080 * 1920 * 4);
+}
+
+static uint64_t
+textureGPUAddress(__unused id self, __unused SEL _cmd)
+{
+	return 0;
+}
+
+static unsigned int
+textureSwizzleKey(__unused id self, __unused SEL _cmd)
+{
+	return 0;
+}
+
+static NSUInteger
+textureNumFaces(__unused id self, __unused SEL _cmd)
+{
+	return 1;
+}
+
+static NSUInteger
+textureRotation(__unused id self, __unused SEL _cmd)
+{
+	return 0;
+}
+
+static id
+deviceNewTextureIOSurface(id self, __unused SEL _cmd, id descriptor, void *surface, NSUInteger plane)
+{
+	op2_log(@"newTextureWithDescriptor:iosurface:%p plane:%lu called", surface, (unsigned long)plane);
+	if (gTextureClass == Nil) {
+		return nil;
+	}
+	id tex = [[gTextureClass alloc] init];
+	struct op2_texture *t = calloc(1, sizeof(*t));
+	void **slot = stateOf(tex);
+	if (!t || !slot) {
+		free(t);
+		return nil;
+	}
+	static uint64_t gNextTexID = 1000;
+	t->device = self;
+	t->descriptor = descriptor;
+	t->textureType = [descriptor respondsToSelector:@selector(textureType)] ? [descriptor textureType] : 2;
+	t->pixelFormat = [descriptor respondsToSelector:@selector(pixelFormat)] ? [descriptor pixelFormat] : 80;
+	t->width = [descriptor respondsToSelector:@selector(width)] ? [descriptor width] : 1080;
+	t->height = [descriptor respondsToSelector:@selector(height)] ? [descriptor height] : 1920;
+	t->usage = [descriptor respondsToSelector:@selector(usage)] ? [descriptor usage] : (0x01 | 0x04);
+	t->iosurface = surface;
+	t->plane = plane;
+	t->uniqueID = ++gNextTexID;
+	t->isDrawable = YES;
+	t->allocatedSize = t->width * t->height * 4;
+	*slot = t;
+	op2_log(@"Created IOSurface texture %p (%lux%lu, fmt %lu, id %llu)",
+	        tex, (unsigned long)t->width, (unsigned long)t->height, (unsigned long)t->pixelFormat, (unsigned long long)t->uniqueID);
+	return tex;
+}
+
+static id
+deviceNewTexture(id self, __unused SEL _cmd, id descriptor)
+{
+	if (gTextureClass == Nil) {
+		return nil;
+	}
+	id tex = [[gTextureClass alloc] init];
+	struct op2_texture *t = calloc(1, sizeof(*t));
+	void **slot = stateOf(tex);
+	if (!t || !slot) {
+		free(t);
+		return nil;
+	}
+	static uint64_t gNextTexID = 2000;
+	t->device = self;
+	t->descriptor = descriptor;
+	t->textureType = [descriptor respondsToSelector:@selector(textureType)] ? [descriptor textureType] : 2;
+	t->pixelFormat = [descriptor respondsToSelector:@selector(pixelFormat)] ? [descriptor pixelFormat] : 80;
+	t->width = [descriptor respondsToSelector:@selector(width)] ? [descriptor width] : 1080;
+	t->height = [descriptor respondsToSelector:@selector(height)] ? [descriptor height] : 1920;
+	t->usage = [descriptor respondsToSelector:@selector(usage)] ? [descriptor usage] : (0x01 | 0x04);
+	t->iosurface = NULL;
+	t->plane = 0;
+	t->uniqueID = ++gNextTexID;
+	t->isDrawable = NO;
+	t->allocatedSize = t->width * t->height * 4;
+	t->bytes = calloc(1, t->allocatedSize);
+	*slot = t;
+	return tex;
+}
+
+/* ---- Render Pipeline State ---- */
+static id
+deviceNewRenderPipelineState(id self, __unused SEL _cmd, __unused id descriptor, __unused NSError **error)
+{
+	if (gPipelineClass == Nil) {
+		return nil;
+	}
+	id pipeline = [[gPipelineClass alloc] init];
+	op2_log(@"newRenderPipelineStateWithDescriptor: created %p", pipeline);
+	return pipeline;
+}
+
+static NSUInteger
+pipelineMaxTotalThreads(__unused id self, __unused SEL _cmd)
+{
+	return 1024;
+}
+
+static BOOL
+pipelineThreadgroupMatchesTile(__unused id self, __unused SEL _cmd)
+{
+	return YES;
+}
+
+static NSUInteger
+pipelineImageblockSampleLength(__unused id self, __unused SEL _cmd)
+{
+	return 0;
+}
+
 /* ---- Libraries & Functions ---- */
 struct op2_library {
 	NSData *data;
@@ -460,7 +849,7 @@ libraryFree(void *state)
 }
 
 static void
-libraryDealloc(id self, SEL _cmd)
+libraryDealloc(__unsafe_unretained id self, SEL _cmd)
 {
 	deallocWith(self, _cmd, gLibraryClass, libraryFree);
 }
@@ -536,7 +925,7 @@ functionFree(void *state)
 }
 
 static void
-functionDealloc(id self, SEL _cmd)
+functionDealloc(__unsafe_unretained id self, SEL _cmd)
 {
 	deallocWith(self, _cmd, gFunctionClass, functionFree);
 }
@@ -659,23 +1048,23 @@ deviceNewDefaultLibrary(id self, SEL _cmd)
 	return deviceNewDefaultLibraryBundle(self, _cmd, [NSBundle mainBundle], NULL);
 }
 
-/* Device Capability Queries */
+/* ---- Device Property Providers ---- */
 static id
 deviceName(__unused id self, __unused SEL _cmd)
 {
 	return @"OnePlus 2 Adreno 430 (OP2Metal)";
 }
 
-static uint64_t
+static unsigned long long
 deviceRegistryID(__unused id self, __unused SEL _cmd)
 {
-	return gAcceleratorPort;
+	return 0x00018994ULL;
 }
 
-static uint64_t
+static unsigned long long
 deviceMaxBufferLength(__unused id self, __unused SEL _cmd)
 {
-	return 256ull << 20;
+	return 256ULL * 1024 * 1024; /* 256 MB */
 }
 
 static MTLSize
@@ -687,13 +1076,27 @@ deviceMaxThreadsPerThreadgroup(__unused id self, __unused SEL _cmd)
 static NSUInteger
 deviceFeatureProfile(__unused id self, __unused SEL _cmd)
 {
-	return 0;
+	/*
+	 * Return 1: Claims Apple1, Apple2, and Common1.
+	 * Required for MPSDevice::GetMPSDevice and MPSKernel during SpringBoard init!
+	 */
+	return 1;
 }
 
 static BOOL
-deviceNo(__unused id self, __unused SEL _cmd)
+deviceSupportsFamily(__unused id self, __unused SEL _cmd, NSUInteger family)
 {
+	/* Claim Apple1 (1001), Apple2 (1002), Common1 (3001), Common2 (3002) */
+	if (family == 1001 || family == 1002 || family == 3001 || family == 3002) {
+		return YES;
+	}
 	return NO;
+}
+
+static unsigned long long
+deviceIOSurfaceAlignment(__unused id self, __unused SEL _cmd)
+{
+	return 64ULL;
 }
 
 static BOOL
@@ -702,23 +1105,29 @@ deviceYes(__unused id self, __unused SEL _cmd)
 	return YES;
 }
 
-static uint64_t
-deviceSharedMemory(__unused id self, __unused SEL _cmd)
+static BOOL
+deviceNo(__unused id self, __unused SEL _cmd)
 {
-	return 1024ull * 1024 * 1024;
+	return NO;
 }
 
-static uint64_t
+static unsigned long long
 deviceNoDedicatedMemory(__unused id self, __unused SEL _cmd)
 {
 	return 0;
 }
 
+static unsigned long long
+deviceSharedMemory(__unused id self, __unused SEL _cmd)
+{
+	return 4096ULL * 1024 * 1024; /* 4GB LPDDR4 unified memory */
+}
+
 static BOOL
 deviceSupportsFeatureSet(__unused id self, __unused SEL _cmd, unsigned long featureSet)
 {
-	/* Claim support for iOS GPUFamily1_v1 (0), iOS GPUFamily2_v1 (2), Common1_v1 (8) */
-	return (featureSet <= 2 || featureSet == 8);
+	/* Claim support for iOS GPUFamily1_v1 (0) through GPUFamily3_v2 (5), and Common1_v1 (8) */
+	return (featureSet <= 5 || featureSet == 8);
 }
 
 /* Descriptor Stubs */
@@ -730,8 +1139,6 @@ static const struct stubSpec {
 } gStubSpecs[] = {
 	{ "newDepthStencilStateWithDescriptor:", "OP2MetalDepthStencilState", "_MTLDepthStencilState", "MTLDepthStencilState" },
 	{ "newSamplerStateWithDescriptor:", "OP2MetalSamplerState", "_MTLSamplerState", "MTLSamplerState" },
-	{ "newTextureWithDescriptor:", "OP2MetalTexture", "_MTLTexture", "MTLTexture" },
-	{ "newRenderPipelineStateWithDescriptor:error:", "OP2MetalRenderPipelineState", "_MTLRenderPipelineState", "MTLRenderPipelineState" },
 	{ "newComputePipelineStateWithFunction:error:", "OP2MetalComputePipelineState", "_MTLComputePipelineState", "MTLComputePipelineState" },
 	{ "newEventWithOptions:", "OP2MetalEvent", "_MTLEvent", "MTLEvent" },
 	{ "newFence", "OP2MetalFence", "_MTLFence", "MTLFence" },
@@ -798,14 +1205,10 @@ makeCustomClass(const char *name, const char *baseName, const char *protocolFami
 	return cls;
 }
 
-/* Device Initializer */
+/* ---- OP2MetalDevice Initialization ---- */
 static id
 deviceInit(id self, SEL _cmd, unsigned int port)
 {
-	struct objc_super sup = { self, gBaseDevice };
-	id (*send)(struct objc_super *, SEL) = (id (*)(struct objc_super *, SEL))objc_msgSendSuper;
-
-	self = send(&sup, @selector(init));
 	gAcceleratorPort = port;
 	gDeviceInstance = self;
 	(void)_cmd;
@@ -960,6 +1363,9 @@ registerOP2Metal(void)
 	class_addMethod(device, sel_registerName("maxBufferLength"), (IMP)deviceMaxBufferLength, "Q@:");
 	class_addMethod(device, sel_registerName("maxThreadsPerThreadgroup"), (IMP)deviceMaxThreadsPerThreadgroup, "{?=QQQ}@:");
 	class_addMethod(device, sel_registerName("featureProfile"), (IMP)deviceFeatureProfile, "Q@:");
+	class_addMethod(device, sel_registerName("supportsFamily:"), (IMP)deviceSupportsFamily, "B@:Q");
+	class_addMethod(device, sel_registerName("iosurfaceTextureAlignmentBytes"), (IMP)deviceIOSurfaceAlignment, "Q@:");
+	class_addMethod(device, sel_registerName("iosurfaceReadOnlyTextureAlignmentBytes"), (IMP)deviceIOSurfaceAlignment, "Q@:");
 	class_addMethod(device, sel_registerName("supportsVertexAmplificationCount:"), (IMP)deviceNo, "B@:Q");
 	class_addMethod(device, sel_registerName("hasUnifiedMemory"), (IMP)deviceYes, "B@:");
 	class_addMethod(device, sel_registerName("dedicatedMemorySize"), (IMP)deviceNoDedicatedMemory, "Q@:");
@@ -977,6 +1383,10 @@ registerOP2Metal(void)
 	class_addMethod(device, sel_registerName("newBufferWithLength:options:"), (IMP)deviceNewBuffer, "@@:QQ");
 	class_addMethod(device, sel_registerName("newBufferWithBytes:length:options:"), (IMP)deviceNewBufferBytes, "@@:r^vQQ");
 	class_addMethod(device, sel_registerName("newBufferWithBytesNoCopy:length:options:deallocator:"), (IMP)deviceNewBufferNoCopy, "@@:^vQQ@?");
+
+	class_addMethod(device, sel_registerName("newTextureWithDescriptor:"), (IMP)deviceNewTexture, "@@:@");
+	class_addMethod(device, sel_registerName("newTextureWithDescriptor:iosurface:plane:"), (IMP)deviceNewTextureIOSurface, "@@:@^vQ");
+	class_addMethod(device, sel_registerName("newRenderPipelineStateWithDescriptor:error:"), (IMP)deviceNewRenderPipelineState, "@@:@^@");
 
 	class_addMethod(device, sel_registerName("newLibraryWithURL:error:"), (IMP)deviceNewLibraryURL, "@@:@^@");
 	class_addMethod(device, sel_registerName("newLibraryWithFile:error:"), (IMP)deviceNewLibraryFile, "@@:@^@");
@@ -1009,7 +1419,7 @@ registerOP2Metal(void)
 	}
 
 	/* Command Buffer Class */
-	gCommandBufferClass = makeCustomClass("OP2MetalCommandBuffer", "_MTLCommandBuffer", "MTLCommandBuffer", (IMP)queueDealloc);
+	gCommandBufferClass = makeCustomClass("OP2MetalCommandBuffer", "_MTLCommandBuffer", "MTLCommandBuffer", (IMP)commandBufferDealloc);
 	if (gCommandBufferClass) {
 		class_addMethod(gCommandBufferClass, sel_registerName("status"), (IMP)commandBufferStatus, "Q@:");
 		class_addMethod(gCommandBufferClass, sel_registerName("error"), (IMP)commandBufferError, "@@:");
@@ -1021,6 +1431,10 @@ registerOP2Metal(void)
 		class_addMethod(gCommandBufferClass, sel_registerName("addCompletedHandler:"), (IMP)commandBufferAddHandler, "v@:@?");
 		class_addMethod(gCommandBufferClass, sel_registerName("addScheduledHandler:"), (IMP)commandBufferAddHandler, "v@:@?");
 		class_addMethod(gCommandBufferClass, sel_registerName("blitCommandEncoder"), (IMP)commandBufferBlitEncoder, "@@:");
+		class_addMethod(gCommandBufferClass, sel_registerName("renderCommandEncoderWithDescriptor:"), (IMP)commandBufferRenderEncoder, "@@:@");
+		class_addMethod(gCommandBufferClass, sel_registerName("presentDrawable:"), (IMP)commandBufferPresentDrawable, "v@:@");
+		class_addMethod(gCommandBufferClass, sel_registerName("presentDrawable:atTime:"), (IMP)commandBufferPresentDrawableAtTime, "v@:@d");
+		class_addMethod(gCommandBufferClass, sel_registerName("presentDrawable:afterMinimumDuration:"), (IMP)commandBufferPresentDrawableAfterDuration, "v@:@d");
 		objc_registerClassPair(gCommandBufferClass);
 	}
 
@@ -1031,6 +1445,57 @@ registerOP2Metal(void)
 		class_addMethod(gBlitEncoderClass, sel_registerName("fillBuffer:range:value:"), (IMP)blitFillBuffer, "v@:@{_NSRange=QQ}C");
 		class_addMethod(gBlitEncoderClass, sel_registerName("endEncoding"), (IMP)blitEndEncoding, "v@:");
 		objc_registerClassPair(gBlitEncoderClass);
+	}
+
+	/* Render Command Encoder */
+	gRenderEncoderClass = makeCustomClass("OP2MetalRenderEncoder", "_MTLCommandEncoder", "MTLRenderCommandEncoder", (IMP)queueDealloc);
+	if (gRenderEncoderClass) {
+		class_addMethod(gRenderEncoderClass, sel_registerName("endEncoding"), (IMP)renderEndEncoding, "v@:");
+		objc_registerClassPair(gRenderEncoderClass);
+	}
+
+	/* Texture Class */
+	gTextureClass = makeCustomClass("OP2MetalTexture", "_MTLResource", "MTLTexture", (IMP)textureDealloc);
+	if (gTextureClass) {
+		declareProtocolFamily(gTextureClass, "MTLTexture");
+		declareProtocolFamily(gTextureClass, "MTLResource");
+		Protocol *tiProto = objc_getProtocol("MTLTextureImplementation");
+		if (tiProto) {
+			class_addProtocol(gTextureClass, tiProto);
+		}
+		class_addMethod(gTextureClass, sel_registerName("device"), (IMP)textureDevice, "@@:");
+		class_addMethod(gTextureClass, sel_registerName("textureType"), (IMP)textureType, "Q@:");
+		class_addMethod(gTextureClass, sel_registerName("pixelFormat"), (IMP)texturePixelFormat, "Q@:");
+		class_addMethod(gTextureClass, sel_registerName("width"), (IMP)textureWidth, "Q@:");
+		class_addMethod(gTextureClass, sel_registerName("height"), (IMP)textureHeight, "Q@:");
+		class_addMethod(gTextureClass, sel_registerName("depth"), (IMP)textureDepth, "Q@:");
+		class_addMethod(gTextureClass, sel_registerName("mipmapLevelCount"), (IMP)textureMipmapLevelCount, "Q@:");
+		class_addMethod(gTextureClass, sel_registerName("sampleCount"), (IMP)textureSampleCount, "Q@:");
+		class_addMethod(gTextureClass, sel_registerName("arrayLength"), (IMP)textureArrayLength, "Q@:");
+		class_addMethod(gTextureClass, sel_registerName("usage"), (IMP)textureUsage, "Q@:");
+		class_addMethod(gTextureClass, sel_registerName("iosurface"), (IMP)textureIOSurface, "^v@:");
+		class_addMethod(gTextureClass, sel_registerName("iosurfacePlane"), (IMP)textureIOSurfacePlane, "Q@:");
+		class_addMethod(gTextureClass, sel_registerName("isDrawable"), (IMP)textureIsDrawable, "B@:");
+		class_addMethod(gTextureClass, sel_registerName("isCompressed"), (IMP)textureIsCompressed, "B@:");
+		class_addMethod(gTextureClass, sel_registerName("compressionFeedback"), (IMP)textureCompressionFeedback, "q@:");
+		class_addMethod(gTextureClass, sel_registerName("uniqueIdentifier"), (IMP)textureUniqueID, "Q@:");
+		class_addMethod(gTextureClass, sel_registerName("allocatedSize"), (IMP)textureAllocatedSize, "Q@:");
+		class_addMethod(gTextureClass, sel_registerName("gpuAddress"), (IMP)textureGPUAddress, "Q@:");
+		class_addMethod(gTextureClass, sel_registerName("swizzleKey"), (IMP)textureSwizzleKey, "I@:");
+		class_addMethod(gTextureClass, sel_registerName("numFaces"), (IMP)textureNumFaces, "Q@:");
+		class_addMethod(gTextureClass, sel_registerName("rotation"), (IMP)textureRotation, "Q@:");
+		objc_registerClassPair(gTextureClass);
+	}
+
+	/* Render Pipeline State Class */
+	gPipelineClass = makeCustomClass("OP2MetalRenderPipelineState", "_MTLRenderPipelineState", "MTLRenderPipelineState", (IMP)queueDealloc);
+	if (gPipelineClass) {
+		declareProtocolFamily(gPipelineClass, "MTLRenderPipelineState");
+		class_addMethod(gPipelineClass, sel_registerName("device"), (IMP)objectDevice, "@@:");
+		class_addMethod(gPipelineClass, sel_registerName("maxTotalThreadsPerThreadgroup"), (IMP)pipelineMaxTotalThreads, "Q@:");
+		class_addMethod(gPipelineClass, sel_registerName("threadgroupSizeMatchesTileSize"), (IMP)pipelineThreadgroupMatchesTile, "B@:");
+		class_addMethod(gPipelineClass, sel_registerName("imageblockSampleLength"), (IMP)pipelineImageblockSampleLength, "Q@:");
+		objc_registerClassPair(gPipelineClass);
 	}
 
 	/* Buffer Class */

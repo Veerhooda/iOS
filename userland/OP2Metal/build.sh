@@ -21,14 +21,19 @@ clang -target arm64-apple-ios12.0 \
       "${DIR}/OP2Metal.m" "${DIR}/op2_metallib.c" \
       -framework Foundation \
       -framework Metal \
+      -framework QuartzCore \
+      -framework IOSurface \
       -framework IOKit \
       -o "${DIR}/build/OP2Metal.bundle/OP2Metal"
 
 cp "${DIR}/Info.plist" "${DIR}/build/OP2Metal.bundle/Info.plist"
 cp "${DIR}/OP2Metal.clients" "${DIR}/build/OP2Metal.bundle/OP2Metal.clients"
 
+echo "[STRIP] Stripping local symbols..."
+strip -x "${DIR}/build/OP2Metal.bundle/OP2Metal"
+
 echo "[SIGN] Signing OP2Metal.bundle (ad-hoc)..."
-codesign -s - "${DIR}/build/OP2Metal.bundle/OP2Metal"
+codesign -s - --force "${DIR}/build/OP2Metal.bundle/OP2Metal"
 
 echo "[BUILD] Compiling metal_test diagnostic utility..."
 clang -target arm64-apple-ios12.0 \
@@ -40,6 +45,8 @@ clang -target arm64-apple-ios12.0 \
       "${DIR}/metal_test.m" \
       -framework Foundation \
       -framework Metal \
+      -framework QuartzCore \
+      -framework IOSurface \
       -framework IOKit \
       -o "${DIR}/build/metal_test"
 

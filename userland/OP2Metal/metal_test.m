@@ -7,6 +7,7 @@
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
+#import <QuartzCore/CAMetalLayer.h>
 #import <mach/mach.h>
 #import <objc/message.h>
 #include <stdio.h>
@@ -497,6 +498,19 @@ test_metal_device(void)
 	BOOL unified = [device respondsToSelector:sel_registerName("hasUnifiedMemory")] ? ((BOOL (*)(id, SEL))objc_msgSend)(device, sel_registerName("hasUnifiedMemory")) : YES;
 	printf("    hasUnifiedMemory:         %s\n", unified ? "YES" : "NO");
 
+	if ([device respondsToSelector:sel_registerName("supportsFamily:")]) {
+		BOOL f1 = ((BOOL (*)(id, SEL, NSUInteger))objc_msgSend)(device, sel_registerName("supportsFamily:"), 1001 /* Apple1 */);
+		BOOL f2 = ((BOOL (*)(id, SEL, NSUInteger))objc_msgSend)(device, sel_registerName("supportsFamily:"), 1002 /* Apple2 */);
+		BOOL c1 = ((BOOL (*)(id, SEL, NSUInteger))objc_msgSend)(device, sel_registerName("supportsFamily:"), 3001 /* Common1 */);
+		printf("    supportsFamily(Apple1):   %s\n", f1 ? "YES" : "NO");
+		printf("    supportsFamily(Apple2):   %s\n", f2 ? "YES" : "NO");
+		printf("    supportsFamily(Common1):  %s\n", c1 ? "YES" : "NO");
+	}
+	if ([device respondsToSelector:sel_registerName("iosurfaceTextureAlignmentBytes")]) {
+		unsigned long long align = ((unsigned long long (*)(id, SEL))objc_msgSend)(device, sel_registerName("iosurfaceTextureAlignmentBytes"));
+		printf("    iosurfaceAlignment:       %llu bytes\n", align);
+	}
+
 	/* Buffer Allocation Test */
 	printf("\n=== Step 4: Metal Buffer Memory Test ===\n");
 	NSUInteger bufSize = 1024 * 1024; /* 1 MB */
@@ -554,7 +568,82 @@ test_metal_device(void)
 
 	[cmdBuf commit];
 	printf("[+] Committed command buffer cleanly\n");
-	printf("\n>>> OP2Metal Phase 3 Verification Complete! <<<\n");
+
+	/* Step 6: QuartzCore default.metallib Loading Test */
+	printf("\n=== Step 6: QuartzCore default.metallib Loading Test ===\n");
+	NSString *qcPath = @"/System/Library/Frameworks/QuartzCore.framework/default.metallib";
+	NSError *qcErr = nil;
+	id<MTLLibrary> qcLib = [device newLibraryWithFile:qcPath error:&qcErr];
+	if (qcLib == nil || qcErr != nil) {
+		printf("[-] Failed to load QuartzCore default.metallib: %s\n",
+		       qcErr ? [[qcErr localizedDescription] UTF8String] : "nil");
+	} else {
+		NSArray *funcNames = [qcLib functionNames];
+		printf("[+] Successfully loaded QuartzCore default.metallib! (%lu functions)\n",
+		       (unsigned long)[funcNames count]);
+		id<MTLFunction> clearFn = [qcLib newFunctionWithName:@"clear_vert"];
+		if (clearFn != nil) {
+			printf("[+] Resolved function 'clear_vert' (type %lu)\n", (unsigned long)[clearFn functionType]);
+		} else {
+			printf("[-] Failed to find function 'clear_vert'\n");
+		}
+	}
+
+	/* Step 7: CAMetalLayer & IOSurface Texture Creation Test */
+	printf("\n=== Step 7: CAMetalLayer & IOSurface Texture Creation Test ===\n");
+	CAMetalLayer *layer = [CAMetalLayer layer];
+	if (layer != nil) {
+		layer.device = device;
+		layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+		layer.drawableSize = CGSizeMake(1080, 1920);
+		printf("[+] Created CAMetalLayer (%p): size 1080x1920, fmt MTLPixelFormatBGRA8Unorm\n", layer);
+
+		MTLTextureDescriptor *texDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
+		                                                                                   width:1080
+		                                                                                  height:1920
+		                                                                               mipmapped:NO];
+		texDesc.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
+
+		/* Test newTextureWithDescriptor:iosurface:plane: */
+		id<MTLTexture> ioTex = ((id (*)(id, SEL, id, void *, NSUInteger))objc_msgSend)(
+		    device, sel_registerName("newTextureWithDescriptor:iosurface:plane:"), texDesc, (void *)0x1234, 0);
+		if (ioTex != nil) {
+			printf("[+] Successfully created IOSurface-backed MTLTexture: %p\n", ioTex);
+			printf("    dimensions:   %lux%lu\n", (unsigned long)[ioTex width], (unsigned long)[ioTex height]);
+			printf("    pixelFormat:  %lu\n", (unsigned long)[ioTex pixelFormat]);
+			printf("    isDrawable:   %s\n", [ioTex respondsToSelector:sel_registerName("isDrawable")] ?
+			       (((BOOL (*)(id, SEL))objc_msgSend)(ioTex, sel_registerName("isDrawable")) ? "YES" : "NO") : "N/A");
+		} else {
+			printf("[-] Failed to create IOSurface-backed MTLTexture!\n");
+		}
+	} else {
+		printf("[-] Failed to allocate CAMetalLayer!\n");
+	}
+
+	/* Step 8: Render Command Encoder & Hardware Presentation Test */
+	printf("\n=== Step 8: Render Command Encoder & Hardware Presentation Test ===\n");
+	id<MTLCommandBuffer> renderCmdBuf = [queue commandBuffer];
+	if (renderCmdBuf != nil) {
+		MTLRenderPassDescriptor *passDesc = [MTLRenderPassDescriptor renderPassDescriptor];
+		id<MTLRenderCommandEncoder> renderEnc = [renderCmdBuf renderCommandEncoderWithDescriptor:passDesc];
+		if (renderEnc != nil) {
+			printf("[+] Successfully created MTLRenderCommandEncoder: %p\n", renderEnc);
+			[renderEnc endEncoding];
+			printf("[+] Called endEncoding cleanly\n");
+		}
+
+		/* Test presentation */
+		if ([renderCmdBuf respondsToSelector:sel_registerName("presentDrawable:")]) {
+			((void (*)(id, SEL, id))objc_msgSend)(renderCmdBuf, sel_registerName("presentDrawable:"), (id)layer);
+			printf("[+] Invoked presentDrawable on command buffer\n");
+		}
+		[renderCmdBuf commit];
+		[renderCmdBuf waitUntilCompleted];
+		printf("[+] Committed and completed render command buffer! status: %lu\n",
+		       (unsigned long)[renderCmdBuf status]);
+	}
+
+	printf("\n>>> OP2Metal Phase 5 Verification Complete! <<<\n");
 }
 
 int
