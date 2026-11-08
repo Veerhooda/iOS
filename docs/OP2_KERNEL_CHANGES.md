@@ -18,7 +18,8 @@ This document indexes all commits and technical modifications made to the kernel
 | `dab30c6` | Milestone 5 | `op2_emmc` block device driver (SDHCI PIO) and persistent HFS+ root mount from eMMC 5.0 flash storage (`userdata` partition). |
 | `d59391e` | Milestone 6 | `AppleKeyStore` stubs, `IOWatchdog`, redundant VFS mount bypass, and launchd process execution bootstrap. |
 | `921f634` | Logging Optimization | Concise syscall tracing to conserve the 256 KiB Ramoops circular ring buffer. |
-| `4444662` | **Milestone 9 (HEAD)** | **Dual-core SMP bring-up (`cpus=2`)**, dedicated `OP2Buttons` Consumer HID service, zero-fill display frame preservation, RGB alpha masking, and 256MB jetsam floor. |
+| `4444662` | Milestone 9 | Dual-core SMP bring-up (`cpus=2`), dedicated `OP2Buttons` Consumer HID service, zero-fill display frame preservation, RGB alpha masking, and 256MB jetsam floor. |
+| `195e98c` | **Milestone 10 (HEAD)** | **Phase 1 Metal Bring-Up**: Published `IOAcceleratorES` and `AGXAccelerator` services attached to AppleCLCD for Metal userland plugin discovery. |
 
 ---
 
