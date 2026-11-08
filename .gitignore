@@ -22,6 +22,7 @@ out/
 shim/out/
 xnu/out/
 xnu/out-*/
+userland/**/build/
 __pycache__/
 
 # OS artifacts

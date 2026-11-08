@@ -19,6 +19,7 @@ Apple iOS 12.5.7 runs reliably on the OnePlus 2 (`ONE A2003`, Snapdragon 810 / M
 | **M7** | WindowServer & SpringBoard UI | `backboardd` + `SpringBoard` active, Mach IPC bootstrap, touch events processed | Run 135–150 |
 | **M8** | Physical Display Continuous Scan | MDSS continuous splash handoff, `fClientUI` surface scan (Surfaces 2..10) | Run 160–175 |
 | **M9** | Dual-Core SMP & Display Preservation | **Dual-core (`cpus=2`) online**, 100% sampled pixels lit (`panel_nz = 2000/2000`), `OP2Buttons` Home HID, 256MB jetsam floor | **Run 181–183** |
+| **M10** | Metal Discovery & Crash Hardening | **Phase 1 Complete**: `IOAcceleratorES` & `AGXAccelerator` published in XNU, `OP2Metal.bundle` userland driver, `MTLCreateSystemDefaultDevice` non-null | **Run 184+** |
 
 ---
 
@@ -58,6 +59,7 @@ Apple iOS 12.5.7 runs reliably on the OnePlus 2 (`ONE A2003`, Snapdragon 810 / M
 
 | Subsystem | State | Current Implementation | Next Step |
 | :--- | :--- | :--- | :--- |
+| **Graphics Acceleration** | **PHASE 1 COMPLETE** | `IOAcceleratorES` & `AGXAccelerator` in XNU, `OP2Metal.bundle` userland driver | Phase 2: Kernel Adreno 430 driver (`OP2GPU.cpp`) |
 | **SMP (Multi-Core)** | **VERIFIED (Dual-Core)** | CPU 0 + CPU 1 online (`cpus=2`) via mailbox & PSCI | Expand to 4-core Little Cluster (CPU 2 + CPU 3) |
 | **Display Panel** | **VERIFIED (Milestone 9)** | Continuous scanout, zero-fill freeze, 100% sampled pixels lit (`panel_nz = 2000/2000`) | Implement hardware MDP5 pipe commit |
 | **Home Button / Navigation** | **VERIFIED** | Dedicated `OP2Buttons` Consumer HID (0x0C/0x40) | Refine gesture recognition in SpringBoard |
