@@ -22,6 +22,9 @@
 #define MTLHazardTrackingModeDefault 0
 #endif
 
+#define OP2_RETURNS_RETAINED __attribute__((ns_returns_retained))
+#define OP2_INIT_METHOD __attribute__((ns_returns_retained))
+
 /* IOKit Declarations */
 typedef mach_port_t io_object_t;
 typedef io_object_t io_service_t;
@@ -267,7 +270,7 @@ bufferPurgeable(id self, __unused SEL _cmd, NSUInteger state)
 	return prev;
 }
 
-static id
+OP2_RETURNS_RETAINED static id
 deviceNewBufferBytes(id self, SEL _cmd, const void *bytes, NSUInteger length, NSUInteger options)
 {
 	id buf = ((id (*)(id, SEL, NSUInteger, NSUInteger))objc_msgSend)(self, sel_registerName("newBufferWithLength:options:"), length, options);
@@ -278,7 +281,7 @@ deviceNewBufferBytes(id self, SEL _cmd, const void *bytes, NSUInteger length, NS
 	return buf;
 }
 
-static id
+OP2_RETURNS_RETAINED static id
 deviceNewBufferNoCopy(__unused id self, __unused SEL _cmd, void *pointer, NSUInteger length, NSUInteger options, void (^deallocator)(void *, NSUInteger))
 {
 	if (gBufferClass == Nil || pointer == NULL) {
@@ -300,7 +303,7 @@ deviceNewBufferNoCopy(__unused id self, __unused SEL _cmd, void *pointer, NSUInt
 	return nil;
 }
 
-static id
+OP2_RETURNS_RETAINED static id
 deviceNewBuffer(id self, SEL _cmd, NSUInteger length, NSUInteger options)
 {
 	void *mem = calloc(1, length ? length : 1);
@@ -328,7 +331,49 @@ queueLabel(__unused id self, __unused SEL _cmd)
 }
 
 static void
+queueSetLabel(__unused id self, __unused SEL _cmd, __unused NSString *label)
+{
+}
+
+static void
 queueSetGPUPriority(__unused id self, __unused SEL _cmd, __unused unsigned long priority)
+{
+}
+
+static void
+queueSetGPUPriorityOffset(__unused id self, __unused SEL _cmd, __unused unsigned long priority, __unused unsigned long offset)
+{
+}
+
+static unsigned long
+queueGetGPUPriority(__unused id self, __unused SEL _cmd)
+{
+	return 1;
+}
+
+static void
+queueSetBackgroundGPUPriority(__unused id self, __unused SEL _cmd, __unused unsigned long priority)
+{
+}
+
+static void
+queueSetBackgroundGPUPriorityOffset(__unused id self, __unused SEL _cmd, __unused unsigned long priority, __unused unsigned long offset)
+{
+}
+
+static unsigned long
+queueGetBackgroundGPUPriority(__unused id self, __unused SEL _cmd)
+{
+	return 1;
+}
+
+static void
+queueSetDispatchQueue(__unused id self, __unused SEL _cmd, __unused dispatch_queue_t queue)
+{
+}
+
+static void
+queueFinish(__unused id self, __unused SEL _cmd)
 {
 }
 
@@ -376,7 +421,7 @@ queueCommandBuffer(id self, __unused SEL _cmd)
 	return cb;
 }
 
-static id
+OP2_RETURNS_RETAINED static id
 deviceNewQueue(id self, __unused SEL _cmd)
 {
 	gDeviceInstance = self;
@@ -384,11 +429,11 @@ deviceNewQueue(id self, __unused SEL _cmd)
 		return nil;
 	}
 	id queue = [[gQueueClass alloc] init];
-	op2_log(@"newCommandQueue: queue instance created");
+	op2_log(@"newCommandQueue: queue instance %p created", (__bridge void *)queue);
 	return queue;
 }
 
-static id
+OP2_RETURNS_RETAINED static id
 deviceNewQueueMax(id self, SEL _cmd, __unused unsigned long maxBuffers)
 {
 	return deviceNewQueue(self, _cmd);
@@ -727,7 +772,7 @@ textureRotation(__unused id self, __unused SEL _cmd)
 	return 0;
 }
 
-static id
+OP2_RETURNS_RETAINED static id
 deviceNewTextureIOSurface(id self, __unused SEL _cmd, id descriptor, void *surface, NSUInteger plane)
 {
 	op2_log(@"newTextureWithDescriptor:iosurface:%p plane:%lu called", surface, (unsigned long)plane);
@@ -760,7 +805,7 @@ deviceNewTextureIOSurface(id self, __unused SEL _cmd, id descriptor, void *surfa
 	return tex;
 }
 
-static id
+OP2_RETURNS_RETAINED static id
 deviceNewTexture(id self, __unused SEL _cmd, id descriptor)
 {
 	if (gTextureClass == Nil) {
@@ -792,7 +837,7 @@ deviceNewTexture(id self, __unused SEL _cmd, id descriptor)
 }
 
 /* ---- Render Pipeline State ---- */
-static id
+OP2_RETURNS_RETAINED static id
 deviceNewRenderPipelineState(id self, __unused SEL _cmd, __unused id descriptor, __unused NSError **error)
 {
 	if (gPipelineClass == Nil) {
@@ -868,7 +913,7 @@ libraryFunctionNames(id self, __unused SEL _cmd)
 	return lib != NULL ? lib->names : [NSArray array];
 }
 
-static id
+OP2_RETURNS_RETAINED static id
 libraryNewFunction(id self, __unused SEL _cmd, NSString *name)
 {
 	struct op2_library *lib = libraryOf(self);
@@ -898,7 +943,7 @@ libraryNewFunction(id self, __unused SEL _cmd, NSString *name)
 	return nil;
 }
 
-static id
+OP2_RETURNS_RETAINED static id
 libraryNewFunctionConstants(id self, SEL _cmd, NSString *name, __unused id constants, __unused NSError **error)
 {
 	return libraryNewFunction(self, _cmd, name);
@@ -951,7 +996,7 @@ functionType(id self, __unused SEL _cmd)
 	return f != NULL ? f->f.type : 0;
 }
 
-static id
+OP2_RETURNS_RETAINED static id
 libraryMake(NSData *data, NSString *label, NSError **error)
 {
 	const char *why = NULL;
@@ -1005,7 +1050,7 @@ libraryMake(NSData *data, NSString *label, NSError **error)
 	return nil;
 }
 
-static id
+OP2_RETURNS_RETAINED static id
 deviceNewLibraryURL(id self, __unused SEL _cmd, NSURL *url, NSError **error)
 {
 	gDeviceInstance = self;
@@ -1016,20 +1061,20 @@ deviceNewLibraryURL(id self, __unused SEL _cmd, NSURL *url, NSError **error)
 	return libraryMake(data, [url path], error);
 }
 
-static id
+OP2_RETURNS_RETAINED static id
 deviceNewLibraryFile(id self, SEL _cmd, NSString *path, NSError **error)
 {
 	return deviceNewLibraryURL(self, _cmd, [NSURL fileURLWithPath:path], error);
 }
 
-static id
+OP2_RETURNS_RETAINED static id
 deviceNewLibraryData(id self, __unused SEL _cmd, NSData *data, NSError **error)
 {
 	gDeviceInstance = self;
 	return libraryMake(data, @"data", error);
 }
 
-static id
+OP2_RETURNS_RETAINED static id
 deviceNewDefaultLibraryBundle(id self, SEL _cmd, NSBundle *bundle, NSError **error)
 {
 	NSURL *url = [bundle URLForResource:@"default" withExtension:@"metallib"];
@@ -1042,7 +1087,7 @@ deviceNewDefaultLibraryBundle(id self, SEL _cmd, NSBundle *bundle, NSError **err
 	return deviceNewLibraryURL(self, _cmd, url, error);
 }
 
-static id
+OP2_RETURNS_RETAINED static id
 deviceNewDefaultLibrary(id self, SEL _cmd)
 {
 	return deviceNewDefaultLibraryBundle(self, _cmd, [NSBundle mainBundle], NULL);
@@ -1146,7 +1191,7 @@ static const struct stubSpec {
 #define STUB_COUNT (sizeof(gStubSpecs) / sizeof(gStubSpecs[0]))
 static Class gStubClass[STUB_COUNT];
 
-static id
+OP2_RETURNS_RETAINED static id
 stubFactory(__unused id self, SEL _cmd)
 {
 	const char *called = sel_getName(_cmd);
@@ -1206,8 +1251,8 @@ makeCustomClass(const char *name, const char *baseName, const char *protocolFami
 }
 
 /* ---- OP2MetalDevice Initialization ---- */
-static id
-deviceInit(id self, SEL _cmd, unsigned int port)
+OP2_INIT_METHOD static id
+deviceInit(__attribute__((ns_consumed)) id self, SEL _cmd, unsigned int port)
 {
 	gAcceleratorPort = port;
 	gDeviceInstance = self;
@@ -1267,6 +1312,22 @@ shownToThisProcess(void)
 		return NO;
 	}
 
+	/*
+	 * Level policy:
+	 *   metal=0: disabled
+	 *   metal=1: metal_test only
+	 *   metal=2: all processes including backboardd & SpringBoard (full hardware acceleration!)
+	 */
+	if (level <= 0) {
+		return NO;
+	}
+	if (level == 1 && strcmp(prog, "metal_test") != 0 && strcmp(prog, "tzinit") != 0) {
+		return NO;
+	}
+	if (level >= 2) {
+		return YES;
+	}
+
 	/* Check OP2Metal.clients file */
 	Dl_info info;
 	if (dladdr((const void *)&shownToThisProcess, &info) != 0 && info.dli_fname != NULL) {
@@ -1295,19 +1356,7 @@ shownToThisProcess(void)
 		}
 	}
 
-	/*
-	 * Level policy:
-	 *   metal=1: metal_test only
-	 *   metal=2: all processes EXCEPT backboardd (recommended: preserves CPU rendering for WindowServer!)
-	 *   metal=3: all processes including backboardd
-	 */
-	if (level >= 3) {
-		return YES;
-	}
-	if (level == 2 && strcmp(prog, "backboardd") != 0) {
-		return YES;
-	}
-	if (level == 1 && strcmp(prog, "metal_test") == 0) {
+	if (level == 2) {
 		return YES;
 	}
 
@@ -1412,7 +1461,17 @@ registerOP2Metal(void)
 	if (gQueueClass) {
 		class_addMethod(gQueueClass, sel_registerName("device"), (IMP)queueDevice, "@@:");
 		class_addMethod(gQueueClass, sel_registerName("label"), (IMP)queueLabel, "@@:");
+		class_addMethod(gQueueClass, sel_registerName("setLabel:"), (IMP)queueSetLabel, "v@:@");
 		class_addMethod(gQueueClass, sel_registerName("setGPUPriority:"), (IMP)queueSetGPUPriority, "v@:Q");
+		class_addMethod(gQueueClass, sel_registerName("setGPUPriority:offset:"), (IMP)queueSetGPUPriorityOffset, "v@:QQ");
+		class_addMethod(gQueueClass, sel_registerName("getGPUPriority"), (IMP)queueGetGPUPriority, "Q@:");
+		class_addMethod(gQueueClass, sel_registerName("setBackgroundGPUPriority:"), (IMP)queueSetBackgroundGPUPriority, "v@:Q");
+		class_addMethod(gQueueClass, sel_registerName("setBackgroundGPUPriority:offset:"), (IMP)queueSetBackgroundGPUPriorityOffset, "v@:QQ");
+		class_addMethod(gQueueClass, sel_registerName("getBackgroundGPUPriority"), (IMP)queueGetBackgroundGPUPriority, "Q@:");
+		class_addMethod(gQueueClass, sel_registerName("setSubmissionQueue:"), (IMP)queueSetDispatchQueue, "v@:@");
+		class_addMethod(gQueueClass, sel_registerName("setCompletionQueue:"), (IMP)queueSetDispatchQueue, "v@:@");
+		class_addMethod(gQueueClass, sel_registerName("finish"), (IMP)queueFinish, "v@:");
+		class_addMethod(gQueueClass, sel_registerName("insertDebugCaptureBoundary"), (IMP)queueFinish, "v@:");
 		class_addMethod(gQueueClass, sel_registerName("commandBuffer"), (IMP)queueCommandBuffer, "@@:");
 		class_addMethod(gQueueClass, sel_registerName("commandBufferWithUnretainedReferences"), (IMP)queueCommandBuffer, "@@:");
 		objc_registerClassPair(gQueueClass);

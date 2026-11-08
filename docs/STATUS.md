@@ -23,6 +23,9 @@ Apple iOS 12.5.7 runs reliably on the OnePlus 2 (`ONE A2003`, Snapdragon 810 / M
 | **M11** | Adreno 430 Subsystem & Memory Planning | **Phase 2 Complete**: Ringbuffer allocation, MMSSCC MMIO mappings, PFP/PM4 firmware bundling | **Phase 2** |
 | **M12** | RPM SMD Voting & Silicon Bring-Up | **Phase 2B Complete**: Qualcomm RPM SMD client, PMI8994 S2 (`VDD_GFX`) power rail active/sleep votes, oxili GDSCs uncollapsed, Adreno 430 CP microcode load & hardware `CP_NOP` packet verified | **Phase 2B** |
 | **M13** | User Client & Hardware Command Submission | **Phase 3 Complete**: `OP2GPUUserClient` in XNU (`msm_drm` ABI), Mach VM contiguous memory mapping (`IOConnectMapMemory64`), EL0 indirect buffer hardware command submission (`CP_INDIRECT_BUFFER_PFE`), DDR DMA hardware fence completion, and `OP2Metal.bundle` registration verified on physical hardware | **Phase 3** |
+| **M14** | Framebuffer Hardware Composition & Metal Discovery | **Phase 4 Complete**: Direct hardware composition via `kOP2Surface` (0x7e) & `kOP2Show` (0x7f), Apple Metal.framework reverse-engineering, `MTLCreateSystemDefaultDevice()` returns `OnePlus 2 Adreno 430 (OP2Metal)`, 1MB buffer write/readback, blit command encoder, 100% silicon pass | **Phase 4** |
+| **M15** | QuartzCore, CAMetalLayer & IOSurface Presentation | **Phase 5 Complete**: QuartzCore `default.metallib` loading (62 shader functions, `clear_vert`), `CAMetalLayer` creation, `newTextureWithDescriptor:iosurface:plane:` returning `OP2MetalTexture`, `iosurfaceTextureAlignmentBytes` = 64 bytes, `supportsFamily:` Apple1/2 and Common1/2, `MTLRenderCommandEncoder` with clean `endEncoding`, `presentDrawable:` triggering `kOP2Show` on commit, ARC `__unsafe_unretained` dealloc fix, 100% silicon pass (`rv=0x0 (sig 0, exit 0)`) | **Phase 5** |
+| **M16** | SpringBoard & System Apps Metal Integration | **Phase 6 Complete**: `backboardd` and `SpringBoard` (PID 41) running stably on physical silicon under SMP dual-core (`cpus=2`) across full 600s deadline with zero crashes; ARC `OP2_RETURNS_RETAINED` method family fix; OpenGLES `IOGLESBundleName` metadata & 256-byte bootline fix; full Lock Screen (`SBDashBoardCombinedListViewController`) & icon lifecycle verified | **Phase 6** |
 
 ---
 
@@ -62,7 +65,7 @@ Apple iOS 12.5.7 runs reliably on the OnePlus 2 (`ONE A2003`, Snapdragon 810 / M
 
 | Subsystem | State | Current Implementation | Next Step |
 | :--- | :--- | :--- | :--- |
-| **Graphics Acceleration** | **PHASE 3 COMPLETE** | `OP2GPUUserClient` (`msm_drm` ABI in XNU), contiguous DDR GEM mapping to Mach tasks, EL0 PM4 indirect buffer hardware dispatch, hardware fence synchronization, `OP2Metal.bundle` registered | Phase 4: Direct IOSurface scanout integration & shader pipeline |
+| **Graphics Acceleration** | **PHASE 6 COMPLETE** | `OP2GPUUserClient` (`msm_drm` ABI), contiguous DDR GEM mapping, EL0 PM4 indirect buffer dispatch, `kOP2Surface` & `kOP2Show` hardware composition, `OP2Metal.bundle` registered, `default.metallib` parsed (62 shaders), `CAMetalLayer` & `IOSurface` textures operational, `backboardd` & `SpringBoard` running crash-free under Metal | Phase 7: Retina display compositing & touch interaction |
 | **SMP (Multi-Core)** | **VERIFIED (Dual-Core)** | CPU 0 + CPU 1 online (`cpus=2`) via mailbox & PSCI | Expand to 4-core Little Cluster (CPU 2 + CPU 3) |
 | **Display Panel** | **VERIFIED (Milestone 9)** | Continuous scanout, zero-fill freeze, 100% sampled pixels lit (`panel_nz = 2000/2000`) | Implement hardware MDP5 pipe commit |
 | **Home Button / Navigation** | **VERIFIED** | Dedicated `OP2Buttons` Consumer HID (0x0C/0x40) | Refine gesture recognition in SpringBoard |
