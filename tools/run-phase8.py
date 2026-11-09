@@ -11,10 +11,10 @@ import sys
 SERIAL = "ebd7ee57"
 BOOT_IMG = "out/xnu-boot.img"
 RECOVERY_IMG = "backup/recovery.img"
-RAMOOPS_LOG = "logs/hardware-phase8-mdp5-direct-scanout-ramoops.log"
-TIMEOUT_SEC = 420  # 7 minutes (deadline is 300s = 5 min)
+RAMOOPS_LOG = "logs/hardware-soak50-ramoops.log"
+TIMEOUT_SEC = 3300  # 55 minutes (deadline is 3000s = 50 min)
 
-print("[PHASE 8 RUNNER] Starting Phase 8 Hardware MDP5 Pipe Direct Scanout Boot Run...", flush=True)
+print("[PHASE 8 RUNNER] Starting 50-Minute Physical Hardware Soak Boot Run...", flush=True)
 
 # Step 0: Ensure BCB boot-recovery is set
 print("[PHASE 8 RUNNER] Step 0: Ensuring BCB boot-recovery is armed...", flush=True)
@@ -59,8 +59,8 @@ if boot_res.returncode != 0:
     print("[PHASE 8 RUNNER] ERROR: Boot command failed!", flush=True)
     sys.exit(1)
 
-# Step 4: Monitor execution (deadline is 300s, poll up to TIMEOUT_SEC)
-print(f"[PHASE 8 RUNNER] Step 4: XNU booted! Monitoring for reset (deadline = 300s, max {TIMEOUT_SEC}s)...", flush=True)
+# Step 4: Monitor execution (deadline is 3000s, poll up to TIMEOUT_SEC)
+print(f"[PHASE 8 RUNNER] Step 4: XNU booted! Monitoring for reset (deadline = 3000s, max {TIMEOUT_SEC}s)...", flush=True)
 start_time = time.time()
 while time.time() - start_time < TIMEOUT_SEC:
     elapsed = int(time.time() - start_time)
