@@ -11,10 +11,10 @@ import sys
 SERIAL = "ebd7ee57"
 BOOT_IMG = "out/xnu-boot.img"
 RECOVERY_IMG = "backup/recovery.img"
-RAMOOPS_LOG = "logs/hardware-soak50-ramoops.log"
-TIMEOUT_SEC = 3300  # 55 minutes (deadline is 3000s = 50 min)
+RAMOOPS_LOG = "logs/hardware-milestone20-smooth-lockscreen-homescreen-ramoops.log"
+TIMEOUT_SEC = 2100  # 35 minutes (deadline is 1800s = 30 min)
 
-print("[PHASE 8 RUNNER] Starting 50-Minute Physical Hardware Soak Boot Run...", flush=True)
+print("[PHASE 8 RUNNER] Starting 30-Minute Physical Hardware Soak Boot Run...", flush=True)
 
 # Step 0: Ensure BCB boot-recovery is set
 print("[PHASE 8 RUNNER] Step 0: Ensuring BCB boot-recovery is armed...", flush=True)
@@ -118,10 +118,6 @@ print(pull.stdout, pull.stderr, flush=True)
 if os.path.exists(RAMOOPS_LOG):
     size = os.path.getsize(RAMOOPS_LOG)
     print(f"[PHASE 8 RUNNER] Success! Harvested {size} bytes to {RAMOOPS_LOG}.", flush=True)
-    m19_log = "logs/hardware-milestone19-lockscreen-homescreen-ramoops.log"
-    import shutil
-    shutil.copyfile(RAMOOPS_LOG, m19_log)
-    print(f"[PHASE 8 RUNNER] Also copied to {m19_log}.", flush=True)
     # Re-arm BCB cookie
     print("[PHASE 8 RUNNER] Re-arming BCB boot-recovery in misc partition...", flush=True)
     subprocess.run(["adb", "-s", SERIAL, "shell", "printf 'boot-recovery\\0' | dd of=/dev/block/bootdevice/by-name/misc bs=14 count=1 conv=notrunc"], timeout=5)

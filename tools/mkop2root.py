@@ -617,6 +617,30 @@ def tweak_controlcenter(root):
           f" {[i for i in ids if i not in kept]}")
 
 
+def tweak_wallpaper(root):
+    sb_dir = os.path.join(root, 'private/var/mobile/Library/SpringBoard')
+    os.makedirs(sb_dir, exist_ok=True)
+    safe_chown(sb_dir, MOBILE_UID, MOBILE_GID)
+    safe_chmod(sb_dir, 0o755)
+
+    wp_src = os.path.join(root, 'Library/Wallpaper/iPhone/500.WWDC2018-414w-736h@3x~iphone.jpg')
+    thumb_src = os.path.join(root, 'Library/Wallpaper/iPhone/500.WWDC2018.thumbnail-414w-736h@3x~iphone.jpg')
+
+    if os.path.exists(wp_src):
+        for target in ['LockBackground.jpg', 'HomeBackground.jpg', 'LockBackgroundPortrait.jpg', 'HomeBackgroundLandscape.jpg']:
+            dst = os.path.join(sb_dir, target)
+            shutil.copyfile(wp_src, dst)
+            safe_chown(dst, MOBILE_UID, MOBILE_GID)
+            safe_chmod(dst, 0o644)
+        if os.path.exists(thumb_src):
+            for target in ['LockBackgroundThumbnail.jpg', 'HomeBackgroundThumbnail.jpg']:
+                dst = os.path.join(sb_dir, target)
+                shutil.copyfile(thumb_src, dst)
+                safe_chown(dst, MOBILE_UID, MOBILE_GID)
+                safe_chmod(dst, 0o644)
+        print("  [WALLPAPER] Seeded official iOS 12 WWDC wallpaper into ~/Library/SpringBoard")
+
+
 def apply_tweaks(root):
     print("[TWEAKS] Applying iOS 12.5.7 system bring-up tweaks...")
     tweak_launchd(root)
@@ -625,6 +649,7 @@ def apply_tweaks(root):
     tweak_frontboard(root)
     tweak_audio(root)
     tweak_graphics(root)
+    tweak_wallpaper(root)
     tweak_timezone(root)
     tweak_fstab(root)
     tweak_medialibrary(root)
