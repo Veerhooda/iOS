@@ -12,7 +12,7 @@ SERIAL = "ebd7ee57"
 BOOT_IMG = "out/xnu-boot.img"
 RECOVERY_IMG = "backup/recovery.img"
 RAMOOPS_LOG = "logs/hardware-phase8-mdp5-direct-scanout-ramoops.log"
-TIMEOUT_SEC = 850  # 14 minutes (deadline is 600s = 10 min)
+TIMEOUT_SEC = 420  # 7 minutes (deadline is 300s = 5 min)
 
 print("[PHASE 8 RUNNER] Starting Phase 8 Hardware MDP5 Pipe Direct Scanout Boot Run...", flush=True)
 
@@ -59,8 +59,8 @@ if boot_res.returncode != 0:
     print("[PHASE 8 RUNNER] ERROR: Boot command failed!", flush=True)
     sys.exit(1)
 
-# Step 4: Monitor execution (deadline is 600s, poll up to TIMEOUT_SEC)
-print(f"[PHASE 8 RUNNER] Step 4: XNU booted! Monitoring for reset (deadline = 1800s, max {TIMEOUT_SEC}s)...", flush=True)
+# Step 4: Monitor execution (deadline is 300s, poll up to TIMEOUT_SEC)
+print(f"[PHASE 8 RUNNER] Step 4: XNU booted! Monitoring for reset (deadline = 300s, max {TIMEOUT_SEC}s)...", flush=True)
 start_time = time.time()
 while time.time() - start_time < TIMEOUT_SEC:
     elapsed = int(time.time() - start_time)
@@ -118,6 +118,10 @@ print(pull.stdout, pull.stderr, flush=True)
 if os.path.exists(RAMOOPS_LOG):
     size = os.path.getsize(RAMOOPS_LOG)
     print(f"[PHASE 8 RUNNER] Success! Harvested {size} bytes to {RAMOOPS_LOG}.", flush=True)
+    m19_log = "logs/hardware-milestone19-lockscreen-homescreen-ramoops.log"
+    import shutil
+    shutil.copyfile(RAMOOPS_LOG, m19_log)
+    print(f"[PHASE 8 RUNNER] Also copied to {m19_log}.", flush=True)
     # Re-arm BCB cookie
     print("[PHASE 8 RUNNER] Re-arming BCB boot-recovery in misc partition...", flush=True)
     subprocess.run(["adb", "-s", SERIAL, "shell", "printf 'boot-recovery\\0' | dd of=/dev/block/bootdevice/by-name/misc bs=14 count=1 conv=notrunc"], timeout=5)

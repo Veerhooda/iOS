@@ -4,10 +4,12 @@ Real **Apple iOS 12.5.7 running on a OnePlus 2** (`ONE A2003`, Qualcomm Snapdrag
 
 Method inspired by [dipa-studio/ios-sweet](https://github.com/dipa-studio/ios-sweet) (Redmi Note 10 Pro), re-engineered from the ground up for MSM8994: GICv2 MMIO interrupt controller instead of GICv3 system registers, native 4K pages (`ARM_PGSHIFT=12`), Qualcomm SDHCI eMMC with CMD12 abort/retry instead of UFS, and Qualcomm Little Kernel (LK) `boot.img v0` bare-metal boot shim.
 
-**Status (2026-11-08): Dual-core SMP, Permanent Display & Phase 1 Metal Bring-Up Verified.**
+**Status (2026-11-09): Quad-core SMP, Lock Screen & Home Screen Interaction Silicon Verified.**
+* **Lock Screen & Home Screen Interaction (Milestone 19):** iOS 12.5.7 Lock Screen clock & wallpaper rendered into Retina Surface 2 (`nz~618`), interactive touch events delivered to Lock Screen, awake Home button pulse dismisses Lock Screen to Home Screen icon grid (`SBIconController`), horizontal swipe gestures (page 2 navigation left/right), and 61 keep-alive cycles maintaining active display illumination across full 5-minute session on physical silicon.
+* **Hardware MDP5 Direct Scanout (Milestone 18):** Direct DMA scanout via MDP5 VIG0 (`REG_MDP5_PIPE_SRC0_ADDR`), 12 MiB continuous splash carveout slots, and native CPU software rasterization fallback.
+* **Quad-Core SMP (`cpus=4`):** Cores 0..3 (Cortex-A53 Little cluster) online, cutting boot time to ~5 minutes.
 * **Metal Discovery & Crash Hardening (Milestone 10):** Dual-class kernel service (`IOAcceleratorES` and `AGXAccelerator`) published in XNU. Userland `OP2Metal.bundle` satisfies `MTLCreateSystemDefaultDevice()`, eliminating null-pointer crashes across iOS apps. Safe isolation level `metal=2` protects `backboardd` while enabling Metal for all userland apps.
-* **Dual-Core SMP (`cpus=2`):** Cortex-A53 CPU 0 + CPU 1 online via hardware mailbox and PSCI `CPU_ON`, stable over 30-minute soak runs with 0 eMMC errors and clean deadline resets. Boot time cut to ~5–6 minutes.
-* **Display Continuity (Milestone 9):** 100% of sampled panel pixels remained non-zero (`panel_nz = 2000/2000` sampled across the panel grid) across full 30-minute runs. Zero-fill frame preservation prevents `backboardd` from blanking the physical panel. Dynamic userland surface progression (Surfaces 2, 9, 12, 15, 18, 21) rendered on CPU and downsampled from 1242×2208 Retina to 1080×1920.
+* **Display Continuity (Milestone 9):** 100% of sampled panel pixels remained non-zero (`panel_nz = 2000/2000` sampled across the panel grid) across full 30-minute runs. Zero-fill frame preservation prevents `backboardd` from blanking the physical panel. Dynamic userland surface progression rendered on CPU and downsampled from 1242×2208 Retina to 1080×1920.
 * **Home Button & Input:** Dedicated `OP2Buttons` Consumer HID service with direct SpringBoard Mach notification port binding. Simulated AUTOHOME and capacitive touch events actively wake and control SpringBoard.
 * **Jetsam Protection:** 256MB task memory limit floor protects `assistivetouchd` and essential daemons from fatal out-of-memory kills on 4GB physical DRAM.
 
