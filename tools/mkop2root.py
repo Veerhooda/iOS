@@ -28,6 +28,7 @@ BUILD = '16H81'
 VERSION = '12.5.7'
 MOBILE_UID = 501
 MOBILE_GID = 501
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
 
 def safe_chown(path, uid, gid):
@@ -174,7 +175,14 @@ def tweak_directories(root):
         'private/var/mobile/Library/SpringBoard',
         'private/var/mobile/Library/FrontBoard',
         'private/var/mobile/Library/Preferences',
-        'private/var/mobile/Library/Caches'
+        'private/var/mobile/Library/Caches',
+        'private/var/mobile/Containers',
+        'private/var/mobile/Containers/Data',
+        'private/var/mobile/Containers/Data/Application',
+        'private/var/mobile/Containers/Shared',
+        'private/var/mobile/Containers/Shared/AppGroup',
+        'private/var/mobile/Containers/Bundle',
+        'private/var/mobile/Containers/Bundle/Application',
     ]:
         full = os.path.join(root, p)
         os.makedirs(full, exist_ok=True)
@@ -498,6 +506,17 @@ def tweak_graphics(root):
         elif os.path.exists(p):
             print(f"  [GPU] {b} kept intact (software fallback handled by CoreAnimation)")
 
+    # Install OP2Metal.bundle into /System/Library/Extensions/
+    op2metal_src = os.path.join(REPO_ROOT, 'userland/OP2Metal/build/OP2Metal.bundle')
+    op2metal_dst = os.path.join(ext_dir, 'OP2Metal.bundle')
+    if os.path.exists(op2metal_src):
+        if os.path.exists(op2metal_dst):
+            shutil.rmtree(op2metal_dst)
+        shutil.copytree(op2metal_src, op2metal_dst)
+        safe_chown(op2metal_dst, 0, 0)
+        safe_chmod(op2metal_dst, 0o755)
+        print("  [GPU] OP2Metal.bundle installed into /System/Library/Extensions/")
+
 
 def tweak_timezone(root):
     # Link /var/db/timezone/zoneinfo to /usr/share/zoneinfo.default
@@ -638,7 +657,45 @@ def tweak_wallpaper(root):
                 shutil.copyfile(thumb_src, dst)
                 safe_chown(dst, MOBILE_UID, MOBILE_GID)
                 safe_chmod(dst, 0o644)
-        print("  [WALLPAPER] Seeded official iOS 12 WWDC wallpaper into ~/Library/SpringBoard")
+
+        # Generate official Apple CPBitmap format (2592x2592 BGRA + 28-byte trailer)
+        try:
+            import struct
+            from PIL import Image
+            im = Image.open(wp_src).convert('RGBA')
+            im_resized = im.resize((2592, 2592), Image.LANCZOS)
+            r, g, b, a = im_resized.split()
+            im_bgra = Image.merge('RGBA', (b, g, r, a))
+            pixel_bytes = im_bgra.tobytes()
+            trailer = struct.pack('<IIIIIII', 0, 0, 2592, 2592, 1, 1, 0xdcb543a2)
+            cpbitmap_data = pixel_bytes + trailer
+
+            for target in ['LockBackground.cpbitmap', 'HomeBackground.cpbitmap',
+                           'OriginalLockBackground.cpbitmap', 'OriginalHomeBackground.cpbitmap']:
+                dst = os.path.join(sb_dir, target)
+                with open(dst, 'wb') as f:
+                    f.write(cpbitmap_data)
+                safe_chown(dst, MOBILE_UID, MOBILE_GID)
+                safe_chmod(dst, 0o644)
+
+            # Generate Wallpaper Options Plists
+            options = {
+                'wallpaperScale': 1.0,
+                'parallaxFactor': 0.0,
+                'zoomScale': 1.0,
+                'cropRect': '{{0, 0}, {2592, 2592}}',
+                'portrait': True,
+                'supportsCropping': True,
+                'hasVideo': False,
+                'stillTimeInVideo': 0.0,
+                'name': 'WWDC2018',
+            }
+            for target in ['LockWallpaperOptions.plist', 'HomeWallpaperOptions.plist']:
+                dst = os.path.join(sb_dir, target)
+                save_plist(dst, options, MOBILE_UID, MOBILE_GID, 0o644)
+            print("  [WALLPAPER] Seeded official iOS 12 WWDC CPBitmaps & options into ~/Library/SpringBoard")
+        except Exception as e:
+            print(f"  [WALLPAPER] Warning: Failed to generate CPBitmap: {e}")
 
 
 def apply_tweaks(root):
