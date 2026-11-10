@@ -11,10 +11,10 @@ import sys
 SERIAL = "ebd7ee57"
 BOOT_IMG = "out/xnu-boot.img"
 RECOVERY_IMG = "backup/recovery.img"
-RAMOOPS_LOG = "logs/hardware-milestone25-50min-soak-verified.log"
+RAMOOPS_LOG = "logs/hardware-milestone26-wallpaper-smooth-verified.log"
 TIMEOUT_SEC = 3300  # 55 minutes (deadline is 3000s = 50 min)
 
-print("[PHASE 8 RUNNER] Starting 50-Minute Physical Hardware Soak Boot Run (Milestone 25)...", flush=True)
+print("[PHASE 8 RUNNER] Starting 50-Minute Physical Hardware Soak Boot Run (Milestone 26)...", flush=True)
 
 # Step 0: Ensure BCB boot-recovery is set
 print("[PHASE 8 RUNNER] Step 0: Ensuring BCB boot-recovery is armed...", flush=True)

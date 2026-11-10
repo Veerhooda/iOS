@@ -33,6 +33,7 @@ Apple iOS 12.5.7 runs reliably on the OnePlus 2 (`ONE A2003`, Snapdragon 810 / M
 | **M23** | Apple CPBitmap Wallpapers & Smooth Unlock | **Milestone 23 Complete**: Reverse-engineered modern Apple CoreProfile Bitmap format (`.cpbitmap` 2592x2592 BGRA + 28-byte trailer `0xdcb543a2`); seeded official WWDC wallpapers & options plists; 99.2% full-bleed display coverage | **Milestone 23** |
 | **M24** | 50-Minute Continuous Physical Soak Verified | **Milestone 24 Complete**: 3,000.0s (50.0 min) continuous hardware execution without watchdog resets; zero client disconnects; quad-core Cortex-A53 SMP active; clean autonomous reset to TWRP | **Milestone 24** |
 | **M25** | Cached Downsampling, Input Port Protection & 50-Min Soak | **Milestone 25 Complete**: 13.7ms 64-bit pair store downsampling; eliminated `bzero` `DC ZVA` alignment aborts via cached system RAM mapping; enforced `backboardd` notification port exclusivity; full Lock/Home navigation; 3,000.0s physical silicon pass | **Milestone 25** |
+| **M26** | Official Wallpaper, 6.0ms Downsampler & Zero-Crash 50-Min Soak | **Milestone 26 Complete**: Flashed unified CPBitmap wallpapers (26.8MB, `0xdcb543a2`); stripped crashing audio module from ControlCenter; 54-block 6.0ms linear frame downsampler (2.25x speedup); direct aligned eMMC transfers; **3,159 frames presented** over 3,000.0s soak with **0 crashes, 0 aborts, and 0 panics** | **Milestone 26** |
 
 ---
 
