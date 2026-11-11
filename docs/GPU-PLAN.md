@@ -189,6 +189,65 @@ the 3D core's context at it, and the same uber draw should fault (CB0 FSR/FAR na
 corrupting RAM -- which both contains the damage and tells us the exact address the draw got wrong.
 Until then the air_run job stays OUT of launchd's cache (original xpcd_cache restored); op2-air-run is inert on disk.
 
+## G4d (2026-11-11): GPU behind real SMMU translation; the stray write is Mesa fd4's private memory
+Boot-arg **gpu_xl=1** (off by default; short name because the cmdline is at 248/250 bytes). Kernel:
+kernel-backup/round6-gpu/g4d/ (before: g4d-pre/). Logs: logs/daily-20261111-202130.log (self-test),
+logs/daily-20261111-203437.log (uber draw).
+
+How (after Linux msm_iommu-v1.c __program_context, reference/kernel-oneplus-msm8994/drivers/iommu):
+- CB0 = gfx3d_user (SID 0) is the only bank KGSL attaches on 8994 (priv_bank_table is v0-only); CB1 untouched.
+  Only CB registers are written (CBAR/SMR are TZ's). TZ accepts them after restore_sec_cfg: SCTLR 0 -> 1 reads back.
+- ARMv7 short descriptors, identity (IOVA = physical), **4 KB pages**: L1 16 KB, L2 tables (1 KB) carved from
+  contiguous 16 KB chunks on demand, per-page refcount. Pages: Normal non-cacheable shareable, RW
+  (TEX=001 C=0 B=0 AP=011) with TEX remap off (SCTLR.TRE=0), so no PRRR/NMRR. Walks non-cacheable; PTEs cleaned to PoC.
+- SCTLR = M only: CFIE=0 (no IRQ; FSR/FAR latch anyway), CFRE=0, CFCFG=0 (terminate). TLBIALL + TLBSYNC after every
+  map/unmap. Faults are polled in waitForFence and named against the client's buffers (describeFaults).
+- Mapped: ring, fence page, every gemNew buffer (NOT its guard band), surfaces segment by segment, self-test IBs.
+  Buffers are unmapped after their last fence. Recovery re-checks CB0 (it has always kept its programming).
+
+Measured:
+1. **ATS resets the SoC.** Any CPU-side translation (CB ATS1PR -> PAR), mapped address or not, resets the phone a
+   few ms later, with no panic. Rounds g4d-1..8 were spent finding this, because IOLog's console buffer lost the tail
+   of the log. SMMU bring-up lines now go straight into ramoops (OP2_SMMU_LOG -> op2_ramoops_ap_write). ATS is gone.
+2. Boot self-test, CONTAINED: a mapped write lands; writes to an unmapped page and 0x40 past a mapped page fault
+   with FAR = the exact address (FSYNR0 0x592 = write) and leave the victims untouched; after unmapping a page a write
+   to it faults too (FAR = page base there) and is dropped; the GPU works afterwards. G0 1000/1000, G1 exact.
+3. **After a faulting write the CP stalls** (the fence never retires) even with RAZ/WI: hang recovery restarts it.
+4. **The G4c uber draw under translation: no crash.** ca_uber_fragment_lp0_cp0_fo0 at 1080x1920: 614 write faults,
+   all dropped, GPU hang -> recovered, the process exits, the phone runs to its deadline. The faults start just past
+   a group of small 16 KB buffers (handles 10-13, phys 0x19cd2000-0x19cee000) and climb to 0x5b640 past the last.
+
+**Root cause of G4c:** the shader writes private memory (117 `stp`), and Mesa's fd4 never sizes private memory:
+fd4_context.c allocates one fixed 8 KB fs_pvt/vs_pvt BO and fd4_emit.c writes the constant SP_FS_PVT_MEM_PARAM
+0x08000001. Per-fiber private memory for a full-screen draw is far larger, so it runs past the BO. That is why 4x4
+was fine (few fibers) and clear_frag at full size was fine (no stp). They are not spills: **117 store_scratch,
+0 load_scratch**. The AIR front end (air_to_nir.c) puts allocas and private globals in scratch, and the CA uber
+shaders write a 220-byte struct of function-constant values (hence 0x9c00 in G4b's corrupted PCs) that nothing
+reads. nir_remove_dead_variables cannot drop it (the stores go through pointer casts), and ir3's own scratch
+lowering is gen>=5 only.
+
+## G4e (2026-11-11): fixed in Mesa; the full-size uber draw is correct with zero faults (logs/g4d-air-run-1.txt)
+tools/mesa-op2/ir3-fd4-pvtmem.patch:
+- ir3_nir.c: ir3_nir_remove_write_only_scratch(). If a shader has no load_scratch, every store_scratch is dead
+  (scratch is per invocation): drop them, scratch_size = 0. It runs on every gen, not only has_pvtmem.
+  CA pipelines (tools/ca-compile-captured.sh): 0 stp everywhere; backboardd fo0 140 -> 9 instructions,
+  fo1 141 -> 11, vertex 90 -> 32; SpringBoard fo0 322 -> 182, vertex 85 -> 30.
+- fd4_draw.c: a draw whose VS/FS still has pvtmem_size > 0 is skipped (logged once: "fd4: draw skipped: shader needs
+  private memory"). A4xx private memory stays unsized (PARAM layout and per-SP fiber count unknown) until a shader
+  really needs it.
+On the phone (gpu_xl=1, round g4d-12, the G4c job: tools/g4c-air-run-job.plist):
+    uber ca_uber_fragment_lp0_cp0_fo0 @ 1080x1920 bgra8+blend   2073600/2073600 px = 96 96 96 255 (= G4b run G), exit 0, twice
+    clear_frag                                                  16/16 exact, exit 0, three times
+    kernel: 0 SMMU faults, 0 recoveries after the boot self-test, the phone runs to its deadline
+The new air_run was written in place over /usr/local/bin/op2-air-run, padded with zeros (previous one:
+backup/rootfs/op2-air-run.g4c). The job is out of launchd's cache again (original xpcd_cache restored).
+
+Next: (1) make gpu_xl=1 the default once a normal day's boot (metal=0, and then metal=2) is clean with it;
+(2) the remaining G4 coverage (depth/stencil, MSAA, IOSurface-backed targets) and then G5; (3) Security, not covered by translation alone (automated review, 2026-11-11): any task can open OP2GPUUserClient
+(gate it on an entitlement); one global table for all clients (needs per-client tables or a command parser);
+GET_IOVA returns physical addresses; kOP2Surface binds any surface, including the 0x03400000 panel fallback,
+with no ownership check.
+
 ## Blocked on
 - Building Mesa: needs to be done on the Mac (`brew install meson ninja flex bison` + python mako).
 

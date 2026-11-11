@@ -1,0 +1,97 @@
+--- a/src/freedreno/ir3/ir3_nir.c
++++ b/src/freedreno/ir3/ir3_nir.c
+@@ -1003,7 +1003,51 @@
+    };
+ }
+ 
++/* OnePlus 2 (G4d): scratch (private memory) is private to the invocation, so stores that nothing ever loads
++ * have no effect. iOS 12's CoreAnimation uber shaders, through the AIR front end, write a 220-byte struct of
++ * function-constant values that is never read (117 store_scratch, 0 load_scratch): nir_remove_dead_variables
++ * keeps it because the stores go through pointer casts. On A4xx the driver cannot size private memory (the
++ * per-SP geometry is unknown), and those stores ran hundreds of KB past fd4's fixed 8 KB buffer. Drop them.
++ */
+ static bool
++ir3_nir_remove_write_only_scratch(nir_shader *s)
++{
++   nir_foreach_function_impl (impl, s) {
++      nir_foreach_block (block, impl) {
++         nir_foreach_instr (instr, block) {
++            if (instr->type == nir_instr_type_intrinsic &&
++                nir_instr_as_intrinsic(instr)->intrinsic == nir_intrinsic_load_scratch)
++               return false;
++         }
++      }
++   }
++
++   bool progress = false;
++   nir_foreach_function_impl (impl, s) {
++      bool impl_progress = false;
++      nir_foreach_block (block, impl) {
++         nir_foreach_instr_safe (instr, block) {
++            if (instr->type == nir_instr_type_intrinsic &&
++                nir_instr_as_intrinsic(instr)->intrinsic == nir_intrinsic_store_scratch) {
++               nir_instr_remove(instr);
++               impl_progress = true;
++            }
++         }
++      }
++      if (impl_progress)
++         nir_metadata_preserve(impl, nir_metadata_control_flow);
++      else
++         nir_metadata_preserve(impl, nir_metadata_all);
++      progress |= impl_progress;
++   }
++   if (s->scratch_size) {
++      s->scratch_size = 0;
++      progress = true;
++   }
++   return progress;
++}
++
++static bool
+ atomic_supported(const nir_instr * instr, const void * data)
+ {
+    /* No atomic 64b arithmetic is supported in A7XX so far */
+@@ -1100,6 +1144,9 @@
+                       16 * 16 /* bytes */,
+                       ir3_get_variable_size_align_bytes, glsl_get_natural_size_align_bytes);
+    }
++   /* not only with has_pvtmem: on A4xx (gen 4) ir3 never lowers to scratch itself, the AIR front end emits
++    * store_scratch for allocas and private globals directly */
++   progress |= OPT(s, ir3_nir_remove_write_only_scratch);
+ 
+    /* Lower scratch writemasks */
+    progress |= OPT(s, nir_lower_wrmasks, should_split_wrmask, s);
+--- a/src/gallium/drivers/freedreno/a4xx/fd4_draw.c
++++ b/src/gallium/drivers/freedreno/a4xx/fd4_draw.c
+@@ -8,6 +8,7 @@
+ 
+ #include "pipe/p_state.h"
+ #include "util/u_memory.h"
++#include "util/log.h"
+ #include "util/u_prim.h"
+ #include "util/u_string.h"
+ 
+@@ -116,6 +117,22 @@
+    const struct ir3_shader_variant *vp = fd4_emit_get_vp(&emit);
+    const struct ir3_shader_variant *fp = fd4_emit_get_fp(&emit);
+ 
++   /* OnePlus 2 (G4d): fd4 gives every shader one fixed 8 KB private-memory buffer with a constant
++    * SP_xS_PVT_MEM_PARAM (fd4_context.c, fd4_emit.c); it is never sized from the variant, and the A4xx
++    * per-SP fiber geometry is unknown (freedreno_devices.py: TODO). A shader that really uses private
++    * memory (spills, ldp/stp) would write past that buffer -- with the GPU SMMU in bypass, into whatever
++    * owns the physical page (G4c: the kernel's pmap). Refuse the draw rather than corrupt memory.
++    */
++   if (unlikely(vp->pvtmem_size || fp->pvtmem_size)) {
++      static bool warned;
++      if (!warned) {
++         warned = true;
++         mesa_loge("fd4: draw skipped: shader needs private memory (vs %u, fs %u bytes per fiber), "
++                   "which A4xx cannot size yet", vp->pvtmem_size, fp->pvtmem_size);
++      }
++      return false;
++   }
++
+    ir3_update_max_tf_vtx(ctx, vp);
+ 
+    /* do regular pass first: */
