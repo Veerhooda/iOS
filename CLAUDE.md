@@ -28,7 +28,10 @@ use printf/IOLog for anything you need to see.
 - GPU G0-G3 pass. G4d: SMMU translation works (boot-arg gpu_xl=1, off by default, 4 KB identity pages, CB0):
   stray GPU writes fault + are dropped. NEVER use SMMU ATS (ATS1PR): it resets the SoC. G4e: the G4c stray write
   was dead private-memory stores past fd4's fixed 8 KB buffer; tools/mesa-op2/ir3-fd4-pvtmem.patch drops them, and
-  the full-size CA uber draw is now pixel-correct with 0 faults (docs/GPU-PLAN.md G4d/G4e). G0+G1 (2026-11-11): ME runs, TZ SMMU config via SMC, MEM_WRITE fences, hang recovery; userland
+  the full-size CA uber draw is now pixel-correct with 0 faults (docs/GPU-PLAN.md G4d/G4e).
+- G5a: CA's Metal use traced; op2mtl.dylib (userland/op2mtl, Mesa fd4 behind a C API, built by tools/mesa-ios.sh)
+  draws CA's own vertex+fragment pipeline on the phone, geometry verified (docs/GPU-PLAN.md G5a-1). Rootfs has
+  slots for it (tools/rootfs_g5.py). Next: the OP2Metal shim onto op2mtl, then metal=2 boots. G0+G1 (2026-11-11): ME runs, TZ SMMU config via SMC, MEM_WRITE fences, hang recovery; userland
   CP fill/copy (userland/op2gpu, probe via tools/deploy-probe.sh as tzinit). G2: every CA pipeline the
   phone asked for compiles for the A430 (tools/mesa-host.sh, tools/ca-compile-captured.sh). G3: Mesa fd4 draws
   on the phone, pixel exact (tools/mesa-ios.sh, job com.op2.air-run in xpcd_cache). See docs/GPU-PLAN.md.

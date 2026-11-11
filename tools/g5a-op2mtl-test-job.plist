@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>KeepAlive</key>
+	<false/>
+	<key>Label</key>
+	<string>com.op2.air-run</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/op2-air-run</string>
+		<string>/System/Library/Frameworks/QuartzCore.framework/default.metallib</string>
+		<string>1080x1920</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/var/tmp/op2mtl</string>
+	<key>StandardOutPath</key>
+	<string>/var/tmp/op2mtl</string>
+	<key>UserName</key>
+	<string>root</string>
+</dict>
+</plist>

@@ -40,6 +40,11 @@ if [ ! -d "$SRC" ] || [ "$(cat "$SRC/.op2-patches" 2>/dev/null)" != "$PATCHES" ]
 	for p in "$ROOT"/tools/mesa-op2/*.patch; do echo "patch (op2): $(basename "$p")"; patch -s --no-backup-if-mismatch -d "$SRC" -p1 < "$p"; done
 	echo "$PATCHES" > "$SRC/.op2-patches"
 fi
+# G5: the Metal driver core (userland/op2mtl), copied in on every run so an edit there is a ninja rebuild
+# (the meson targets are in tools/mesa-op2/op2mtl-meson.patch and exist only when these files do)
+for f in op2mtl.c op2mtl.h op2mtl_test.c; do
+	cmp -s "$ROOT/userland/op2mtl/$f" "$SRC/src/compiler/air/$f" || cp "$ROOT/userland/op2mtl/$f" "$SRC/src/compiler/air/$f"
+done
 
 # IOKit's user-client API: the iPhoneOS SDK has IOKit.tbd but no headers (tools/ios-iokit: the calls a user
 # client needs, as Apple's IOKitLib.h declares them)
@@ -95,3 +100,14 @@ echo "mesa-ios.sh: $B/out/air_run ($(stat -f %z out/air_run) bytes)"
 # the phone's copy is rewritten in place (tools/op2hfs.py), which cannot grow a file: say when it would not fit
 ONDEV=9414816
 [ "$(stat -f %z out/air_run)" -le $ONDEV ] || echo "mesa-ios.sh: WARNING: bigger than the phone's /usr/local/bin/op2-air-run ($ONDEV bytes)"
+
+# G5: op2mtl.dylib (-> /usr/local/lib/op2mtl.dylib, a 24 MiB slot: tools/rootfs_g5.py) and its test
+ninja -C build src/gallium/drivers/freedreno/op2mtl.dylib src/gallium/drivers/freedreno/op2mtl_test \
+	> ninja-op2mtl.log 2>&1 || { grep -m20 -B2 -A10 "error" ninja-op2mtl.log; exit 1; }
+cp build/src/gallium/drivers/freedreno/op2mtl.dylib out/op2mtl.dylib
+cp build/src/gallium/drivers/freedreno/op2mtl_test out/op2mtl_test
+strip -x out/op2mtl.dylib out/op2mtl_test
+codesign -s - --force out/op2mtl.dylib
+codesign -s - -i com.apple.tzinit --force out/op2mtl_test
+echo "mesa-ios.sh: $B/out/op2mtl.dylib ($(stat -f %z out/op2mtl.dylib) bytes), op2mtl_test ($(stat -f %z out/op2mtl_test) bytes)"
+[ "$(stat -f %z out/op2mtl.dylib)" -le 25165824 ] || echo "mesa-ios.sh: WARNING: op2mtl.dylib is bigger than its 24 MiB slot"

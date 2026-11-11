@@ -1,0 +1,20 @@
+--- a/src/compiler/air/air_to_nir.c	2026-11-12 03:47:54
++++ b/src/compiler/air/air_to_nir.c	2026-11-12 03:47:54
+@@ -2738,8 +2738,15 @@
+          var->data.interpolation = INTERP_MODE_SMOOTH;
+       var->data.centroid = md_key(node, "air.centroid") >= 0;
+       var->data.sample = md_key(node, "air.sample") >= 0;
+-      if (c->nir->info.stage == MESA_SHADER_FRAGMENT)
+-         add_varying(c, name, slot, air_nir_components(t), node);
++      if (c->nir->info.stage == MESA_SHADER_FRAGMENT) {
++         /* op2 (G5b): the varying's name is its LINK string, the one after `air.fragment_input' (`user(locnN)'),
++          * which is what the vertex side's air.vertex_output carries: slots here are by order, and QuartzCore's
++          * shared vertex functions write more varyings than each fragment function reads, so a runtime has to
++          * match the two by this name (Chlorophyll fb5d79f found the colours coming from the wrong slot) */
++         int fk = md_key(node, "air.fragment_input");
++         const char *link = fk >= 0 ? md_str(node, fk + 1) : NULL;
++         add_varying(c, link ? link : name, slot, air_nir_components(t), node);
++      }
+       nir_def *loaded = nir_load_var(&c->b, var);
+       if (io_is_boolean(t))
+          loaded = nir_ine_imm(&c->b, loaded, 0);   /* see io_is_boolean */

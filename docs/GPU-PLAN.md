@@ -284,3 +284,62 @@ Still open: path_cubic_vert -- ir3 assert (ubo->idx > 0) in ir3_get_shared_drive
 (the binning variant reusing a driver UBO; probably the command-line tool, not the GPU). Not used by the pipelines
 CA asked for in this capture. The sweep's first 57/62 (before fix 1) compiled with every derived variable 0.
 Next (G3): fd4 sysmem draw of a compiled ir3 program into an RGBA8 target.
+
+## G5a (2026-11-11): what CoreAnimation asks of Metal (trace), and the driver design
+OP2Metal now sends its log lines to the kernel log (op2_log -> kOP2Log -> ramoops, "M <process>: ...",
+deduplicated per process with digits dropped; NSLog never reached ramoops). Every selector it does not implement
+is logged by the forwarder. The G2 function-constant capture was removed to make room (71472 of 71552 bytes).
+Trace boot: EXTRA="metal=2", logs/daily-20261111-212016.log.
+
+What backboardd and SpringBoard use (and nothing else in a full boot):
+- device: one command queue (SpringBoard: two); newFunction ca_uber_vertex_lp0 / ca_uber_fragment_lp0_cp0_fo0 with
+  function constants; ~65 render pipeline states made up front in backboardd, 8 in SpringBoard
+- render targets: IOSurface textures, backboardd 1242x2208 format 80 (BGRA8Unorm) x2 (double buffered);
+  SpringBoard 162x162 and 2592x2592 format 80, 256x1 format 30 (gradients)
+- textures: replaceRegion:mipmapLevel:(slice:)withBytes:bytesPerRow:(bytesPerImage:), storageMode, setLabel:
+- render encoder: setViewport:, setScissorRect:, setRenderPipelineState:, setVertexBuffer:offset:atIndex:,
+  setVertexBufferOffset:atIndex:, setFragmentTexture:atIndex:, setFragmentSamplerState:atIndex:,
+  setFragmentBuffer:offset:atIndex:, setFragmentBufferOffset:atIndex:,
+  drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:, endEncoding
+- device (SpringBoard): newTextureLayoutWithDescriptor:isHeapOrBufferBacked:
+- NOT used: drawables, presentDrawable, blit encoders, compute. CA renders into IOSurfaces and swaps them through
+  the framebuffer itself (our kernel FB path already does that).
+
+Design:
+- /usr/local/lib/op2mtl.dylib: Mesa fd4 + the AIR front end, linked as air_run is (~9-10 MB), behind a C API:
+  device; pipeline (vertex + fragment function, constants, colour format, blend) compiled through AIR->NIR->ir3;
+  buffers (BOs, CPU-mapped); textures incl. IOSurfaces (kernel kOP2Surface import, mapped per segment under the
+  SMMU); replace_region; samplers; render pass begin (load/clear) / state / indexed draw / end + fence.
+  air_run already does every one of these: it is the starting point.
+- OP2Metal stays a thin shim: dlopen the library, implement exactly the selectors above on it, keep today's stubs
+  when the library is absent (an all-zero slot) or fails.
+- Every G5 boot with gpu_xl=1. The cmdline has room for metal=2 or gpu_xl=1, not both: flip gpu_xl's default or
+  free bytes before G5 boots.
+- Room on the rootfs: tools/rootfs_g5.py (run by tools/rootfs-journal.sh, needs sudo, ONCE) makes a 24 MiB zero slot
+  for op2mtl.dylib and gives OP2Metal a 1 MiB slot; after that both are replaced in place by tools/op2hfs.py.
+
+## G5a-1 (2026-11-11): op2mtl, the driver core: CA's own pipeline draws on the phone (logs/g5a-op2mtl-2.txt)
+userland/op2mtl/: op2mtl.h (the C API, Metal's own enum values), op2mtl.c (air_run's proven draw path behind it),
+op2mtl_test.c. Built by tools/mesa-ios.sh (sources copied into src/compiler/air every run; targets in
+tools/mesa-op2/op2mtl-meson.patch, present only when the sources are, so the host build is unaffected):
+out/mesa-ios/out/op2mtl.dylib (8.4 MB, install name /usr/local/lib/op2mtl.dylib, 35 exported op2mtl_* calls) and
+op2mtl_test (52 KB, links it). On the phone: the dylib in its 24 MiB slot; the test in /usr/local/bin/op2-air-run's
+slot (that slot's previous content: backup/rootfs/op2-air-run.g5a-slot), job tools/g5a-op2mtl-test-job.plist
+(output /var/tmp/op2mtl); the job is OUT of launchd's cache again.
+What it does: device (fd4 screen, FD_MESA_DEBUG=sysmem); metallib libraries; pipelines from a vertex + fragment
+function with function constants, the vertex descriptor turned into Gallium vertex elements by the front end's
+driver_location, blend per attachment; buffers whose `contents` is the BO's own CPU mapping (an UNSYNCHRONIZED
+map kept for the buffer's life: freedreno has no persistent maps); textures and IOSurface textures
+(resource_from_handle(WINSYS_HANDLE_TYPE_FD, IOSurface ID): freedreno's dmabuf import IS the kOP2Surface import on
+this port); samplers incl. the shader's inline ones; render passes with load/clear, Metal's viewport (negative y,
+clip_halfz) and scissor; draws and indexed draws; commit = flush + fence, wait = fence_finish. A draw whose
+pipeline reads a binding that is not set is refused by name (that is how the first run said what CA's vertex
+function reads).
+Measured (gpu_xl=1, round g5a-op2mtl-2): CA's ca_uber_vertex_lp0 + ca_uber_fragment_lp0_cp0_fo0 with backboardd's
+constants, 7 stage-in attributes from one interleaved buffer, an identity transform in vertex constant buffer 1,
+an indexed quad over the middle half of a 1080x1920 BGRA8 target: fence completed, 512416 of 512416 pixels inside
+drawn, 0 of 1549184 outside, 0 SMMU faults, no hang. CA's vertex function reads constant buffers 1, 2, 3, 5; its
+fragment function 0, 1, 2, 3, 5 and samplers 0..5. Geometry is verified; the COLOUR is not (the fragment
+constants are a byte pattern; the inside varies by quadrant): CA's real buffer contents come with the shim.
+Next: the OP2Metal shim (dlopen op2mtl.dylib; MTLBuffer/MTLTexture/IOSurface texture/pipeline/encoder selectors of
+the G5a trace onto the API; log CA's pipeline descriptors and bindings), then metal=2 boots.

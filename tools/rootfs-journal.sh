@@ -22,6 +22,8 @@ sudo python3 tools/rootfs_prefs.py "$MNT"
 if [ -f out/mesa-ios/out/air_run ]; then
   sudo python3 tools/rootfs_g3.py "$MNT"
 fi
+# G5: zero-padded slots for the Metal driver library and a growable OP2Metal (later updates go in place)
+sudo python3 tools/rootfs_g5.py "$MNT"
 sync
 hdiutil detach "$MNT"
 trap - EXIT
