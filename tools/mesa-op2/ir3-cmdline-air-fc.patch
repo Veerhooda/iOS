@@ -1,0 +1,32 @@
+--- a/src/gallium/drivers/freedreno/ir3/ir3_cmdline.c
++++ b/src/gallium/drivers/freedreno/ir3/ir3_cmdline.c
+@@ -282,6 +282,29 @@
+ 
+    struct air_constant_value *fc;
+    unsigned num_fc = air_module_function_constants(NULL, bitcode, bitcode_size, &fc);
++   /* AIR_FC="index=value,...": the pipeline's function constants (as a Metal app sets them with
++    * MTLFunctionConstantValues), so a variant can be compiled as it is really asked for. */
++   const char *spec = getenv("AIR_FC");
++   while (spec && *spec) {
++      char *end;
++      unsigned long idx = strtoul(spec, &end, 0);
++      if (*end != '=')
++         errx(1, "AIR_FC: expected index=value at \"%s\"", spec);
++      unsigned long long val = strtoull(end + 1, &end, 0);
++      bool found = false;
++      for (unsigned i = 0; i < num_fc; i++) {
++         if (fc[i].index == idx) {
++            fc[i].bits = val;
++            fc[i].supplied = true;
++            found = true;
++         }
++      }
++      if (!found)
++         warnx("AIR_FC: the module declares no function constant %lu", idx);
++      spec = *end == ',' ? end + 1 : end;
++      if (*end && *end != ',')
++         errx(1, "AIR_FC: unexpected \"%s\"", end);
++   }
+    /* An air.visible library function is not an entry point; the wrapper makes
+     * one that calls it, so that these 135 modules can be compiled for the
+     * Adreno at all (nir_air.h, docs/air.md section 5). Always on here: this

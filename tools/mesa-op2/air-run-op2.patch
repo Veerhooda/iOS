@@ -1,0 +1,216 @@
+--- a/src/compiler/air/air_run.c
++++ b/src/compiler/air/air_run.c
+@@ -24,6 +24,8 @@
+  */
+ 
+ #include <stdio.h>
++#include <spawn.h>
++#include <sys/wait.h>
+ #include <ctype.h>
+ #include <errno.h>
+ #include <stdlib.h>
+@@ -862,6 +864,11 @@
+ static union pipe_color_union clear_colour[MAX_CLEARS];
+ static unsigned clear_count;
+ static bool clear_given;
++/* G4 (OnePlus 2): --blend (premultiplied source-over, CoreAnimation's normal blend), --size WxH (a render
++ * target other than 4x4), --rt bgra8 (B8G8R8A8_UNORM, what CA's surfaces are) */
++static bool blend_over;
++static unsigned g_w = WIDTH, g_h = HEIGHT;
++static bool rt_bgra8;
+ static const char *packed16_name;
+ static unsigned packed16_word;
+ 
+@@ -1642,6 +1649,46 @@
+ int
+ main(int argc, char **argv)
+ {
++   /* --batch RUN [--next RUN]...: several runs from one launch, for a phone whose launchd job list is
++    * the only way to start a program (iOS 12: xpcd_cache, tools/xpcd-cache-add.py) and has no shell.
++    * Each RUN is this program's own arguments, run as a process of its own so that one that crashes
++    * or hangs ends only itself; its exit status follows its output.
++    */
++   if (argc > 1 && !strcmp(argv[1], "--batch")) {
++      extern char **environ;
++      unsigned run = 0;
++      for (int i = 2; i < argc;) {
++         int j = i;
++         while (j < argc && strcmp(argv[j], "--next"))
++            j++;
++         char *args[128];
++         int n = 0;
++         args[n++] = argv[0];
++         for (int k = i; k < j && n < 127; k++)
++            args[n++] = argv[k];
++         args[n] = NULL;
++         printf("air_run: === run %u:", ++run);
++         for (int k = 1; k < n; k++)
++            printf(" %s", args[k]);
++         printf("\n");
++         fflush(stdout);
++         pid_t pid;
++         int st = 0;
++         if (posix_spawn(&pid, argv[0], NULL, NULL, args, environ) != 0) {
++            printf("air_run: === run %u could not start: errno %d\n", run, errno);
++         } else {
++            waitpid(pid, &st, 0);
++            if (WIFSIGNALED(st))
++               printf("air_run: === run %u ended by signal %d\n", run, WTERMSIG(st));
++            else
++               printf("air_run: === run %u exit %d\n", run, WEXITSTATUS(st));
++         }
++         fflush(stdout);
++         i = j + 1;
++      }
++      return 0;
++   }
++
+    /* --disasm: ask ir3 to print the Adreno instructions it generates. The
+     * screen's name proves fd_screen_create won; it does not prove that the
+     * shader itself went through ir3 rather than some later software path, and
+@@ -1684,6 +1731,25 @@
+          packed16_word = (unsigned)strtoul(argv[3], NULL, 0) & 0xffff;
+          argv += 3;
+          argc -= 3;
++      } else if (!strcmp(argv[1], "--blend")) {
++         blend_over = true;
++         argv++;
++         argc--;
++      } else if (!strcmp(argv[1], "--size") && argc > 2) {
++         if (sscanf(argv[2], "%ux%u", &g_w, &g_h) != 2 || !g_w || !g_h || g_w > 4096 || g_h > 4096) {
++            fprintf(stderr, "air_run: --size wants WxH\n");
++            return 2;
++         }
++         argv += 2;
++         argc -= 2;
++      } else if (!strcmp(argv[1], "--rt") && argc > 2) {
++         if (strcmp(argv[2], "bgra8")) {
++            fprintf(stderr, "air_run: --rt knows bgra8\n");
++            return 2;
++         }
++         rt_bgra8 = true;
++         argv += 2;
++         argc -= 2;
+       } else if (!strcmp(argv[1], "--clear") && argc > 2) {
+          /* R,G,B,A for target 0, then ':' and four more for target 1, and so on.
+           * A colon and not a semicolon: these reach the phone as job lines, and
+@@ -2151,18 +2217,23 @@
+       fprintf(stderr, "air_run: %u render targets, more than this can bind\n", num_rt);
+       return 1;
+    }
++   if (rt_bgra8) {
++      rt_format = PIPE_FORMAT_B8G8R8A8_UNORM;
++      rt_is_float = false;
++      rt_is_half = false;
++   }
+    struct pipe_resource templ = {
+       .target = PIPE_TEXTURE_2D,
+       .format = rt_format,
+-      .width0 = WIDTH,
+-      .height0 = HEIGHT,
++      .width0 = g_w,
++      .height0 = g_h,
+       .depth0 = 1,
+       .array_size = 1,
+       .bind = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW,
+    };
+    struct pipe_resource *target = NULL;
+    struct pipe_framebuffer_state fb = {
+-      .width = WIDTH, .height = HEIGHT, .nr_cbufs = num_rt,
++      .width = g_w, .height = g_h, .nr_cbufs = num_rt,
+    };
+    for (unsigned i = 0; i < num_rt; i++) {
+       struct pipe_resource *res = screen->resource_create(screen, &templ);
+@@ -2186,13 +2257,19 @@
+        * it is landed against -- it must turn from (100+x, 200+y, ...) into
+        * (100+x, 200+(3-y), ...), the texture mirrored vertically, on both back ends.
+        */
+-      .scale = { WIDTH / 2.0f, -(HEIGHT / 2.0f), 1.0f },
+-      .translate = { WIDTH / 2.0f, HEIGHT / 2.0f, 0.0f },
++      .scale = { g_w / 2.0f, -(g_h / 2.0f), 1.0f },
++      .translate = { g_w / 2.0f, g_h / 2.0f, 0.0f },
+    });
+ 
+-   void *blend = pipe->create_blend_state(pipe, &(struct pipe_blend_state){
+-      .rt[0].colormask = PIPE_MASK_RGBA,
+-   });
++   struct pipe_blend_state bs = { .rt[0].colormask = PIPE_MASK_RGBA };
++   if (blend_over) {
++      bs.rt[0].blend_enable = 1;
++      bs.rt[0].rgb_func = bs.rt[0].alpha_func = PIPE_BLEND_ADD;
++      bs.rt[0].rgb_src_factor = bs.rt[0].alpha_src_factor = PIPE_BLENDFACTOR_ONE;
++      bs.rt[0].rgb_dst_factor = bs.rt[0].alpha_dst_factor = PIPE_BLENDFACTOR_INV_SRC_ALPHA;
++      printf("air_run: blending ON: premultiplied source-over (ONE, ONE_MINUS_SRC_ALPHA)\n");
++   }
++   void *blend = pipe->create_blend_state(pipe, &bs);
+    pipe->bind_blend_state(pipe, blend);
+    void *dsa = pipe->create_depth_stencil_alpha_state(pipe,
+       &(struct pipe_depth_stencil_alpha_state){ 0 });
+@@ -2614,7 +2691,7 @@
+       for (unsigned i = 0; i < num_rt; i++) {
+          const union pipe_color_union *c =
+             &clear_colour[MIN2(i, clear_count - 1)];
+-         pipe->clear_render_target(pipe, fb.cbufs[i], c, 0, 0, WIDTH, HEIGHT, false);
++         pipe->clear_render_target(pipe, fb.cbufs[i], c, 0, 0, g_w, g_h, false);
+          printf("air_run: render target %u cleared to %.9g %.9g %.9g %.9g, which is "
+                 "what a framebuffer fetch of it in this draw will read\n", i,
+                 (double)c->f[0], (double)c->f[1], (double)c->f[2], (double)c->f[3]);
+@@ -2636,7 +2713,7 @@
+    /* the pixel */
+    struct pipe_transfer *xfer;
+    void *pix = pipe->texture_map(pipe, target, 0, PIPE_MAP_READ,
+-                                 &(struct pipe_box){ .width = WIDTH, .height = HEIGHT,
++                                 &(struct pipe_box){ .width = g_w, .height = g_h,
+                                                      .depth = 1 }, &xfer);
+    if (!pix) {
+       fprintf(stderr, "air_run: the render target could not be read back\n");
+@@ -2655,7 +2732,7 @@
+       printf("air_run: packed16-rt %s: the shader's colour came back as the word "
+              "0x%04x\n", packed16_name, ((uint16_t *)pix)[0]);
+       pipe->texture_unmap(pipe, xfer);
+-      printf("air_run: drew %ux%u into %s, %u render target%s\n", WIDTH, HEIGHT,
++      printf("air_run: drew %ux%u into %s, %u render target%s\n", g_w, g_h,
+              util_format_short_name(rt_format), num_rt, num_rt == 1 ? "" : "s");
+       pipe->destroy(pipe);
+       screen->destroy(screen);
+@@ -2663,7 +2740,30 @@
+       glsl_type_singleton_decref();
+       return 0;
+    }
+-   for (unsigned c = 0; c < 4; c++) {
++   {
++      /* coverage: how many pixels equal pixel (0, 0), and the last one */
++      unsigned bpp = util_format_get_blocksize(rt_format), same = 0;
++      const uint8_t *base = pix;
++      for (unsigned y = 0; y < g_h; y++)
++         for (unsigned x = 0; x < g_w; x++)
++            same += !memcmp(base + y * xfer->stride + x * bpp, base, bpp);
++      const uint8_t *last = base + (g_h - 1) * xfer->stride + (g_w - 1) * bpp;
++      printf("air_run: %u of %u pixels equal pixel (0, 0); pixel (%u, %u) is",
++             same, g_w * g_h, g_w - 1, g_h - 1);
++      for (unsigned k = 0; k < bpp; k++)
++         printf(" %02x", last[k]);
++      printf(" (pixel (0, 0):");
++      for (unsigned k = 0; k < bpp; k++)
++         printf(" %02x", base[k]);
++      printf(")\n");
++   }
++   if (rt_bgra8) {
++      const uint8_t *b8 = pix;
++      /* memory order B, G, R, A: printed as R, G, B, A like the others */
++      printf("  %.9g\n  %.9g\n  %.9g\n  %.9g\n", b8[2] / 255.0, b8[1] / 255.0, b8[0] / 255.0, b8[3] / 255.0);
++      printf("air_run: bgra8 bytes (memory order B G R A): %u %u %u %u\n", b8[0], b8[1], b8[2], b8[3]);
++   }
++   for (unsigned c = 0; c < 4 && !rt_bgra8; c++) {
+       if (rt_is_half)
+          printf("  %.9g\n", (double)_mesa_half_to_float(((uint16_t *)pix)[c]));
+       else if (rt_is_float)
+@@ -2674,7 +2774,7 @@
+    pipe->texture_unmap(pipe, xfer);
+ 
+    printf("air_run: drew %ux%u into %s, %u render target%s\n",
+-          WIDTH, HEIGHT, util_format_short_name(rt_format), num_rt,
++          g_w, g_h, util_format_short_name(rt_format), num_rt,
+           num_rt == 1 ? "" : "s");
+ 
+    pipe->destroy(pipe);

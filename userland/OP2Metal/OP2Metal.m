@@ -955,9 +955,198 @@ libraryNewFunction(id self, __unused SEL _cmd, NSString *name)
 	return nil;
 }
 
+/*
+ * Function-constant capture (G2): what CoreAnimation asks Metal for. The setters of
+ * MTLFunctionConstantValues are hooked to keep each value (by object, in a small C table: this
+ * binary must stay within the bytes the rootfs file has, so no new Foundation imports); when a
+ * function is made with them, its name and the values go to the kernel log as 16 packed scalars
+ * through OP2GPU selector kOP2Log (0x7c), which ramoops keeps.
+ */
+#define FC_OBJS 48
+#define FC_VALS 40
+struct fc_val { char key[20]; uint8_t type, len; uint8_t v[16]; };
+static struct fc_obj { const void *obj; unsigned n; struct fc_val vals[FC_VALS]; } gFC[FC_OBJS];
+static unsigned gFCNext;
+static IMP gFCSetIndex, gFCSetRange, gFCSetName;
+
+static unsigned
+fcSize(NSUInteger t)
+{
+	if (t >= 3 && t <= 6) return 4 * (unsigned)(t - 2);
+	if (t >= 16 && t <= 19) return 2 * (unsigned)(t - 15);
+	if (t >= 29 && t <= 36) return 4 * (unsigned)((t - 29) % 4 + 1);
+	if (t >= 37 && t <= 44) return 2 * (unsigned)((t - 37) % 4 + 1);
+	if (t >= 45 && t <= 56) return (unsigned)((t - 45) % 4 + 1);
+	return 4;
+}
+
+static struct fc_obj *
+fcFind(const void *obj, int make)
+{
+	for (unsigned i = 0; i < FC_OBJS; i++)
+		if (gFC[i].obj == obj) return &gFC[i];
+	if (!make) return NULL;
+	struct fc_obj *o = &gFC[gFCNext++ % FC_OBJS];   /* oldest slot reused */
+	o->obj = obj;
+	o->n = 0;
+	return o;
+}
+
+static void
+fcRecord(id obj, const char *key, const void *v, NSUInteger type)
+{
+	struct fc_obj *o = fcFind((__bridge const void *)obj, 1);
+	struct fc_val *f = NULL;
+	for (unsigned i = 0; i < o->n; i++)
+		if (!strcmp(o->vals[i].key, key)) f = &o->vals[i];
+	if (!f) {
+		if (o->n >= FC_VALS) return;
+		f = &o->vals[o->n++];
+	}
+	size_t kl = strlen(key);
+	if (kl > sizeof f->key - 1) kl = sizeof f->key - 1;
+	memcpy(f->key, key, kl);
+	f->key[kl] = 0;
+	f->type = (uint8_t)type;
+	f->len = (uint8_t)fcSize(type);
+	if (f->len > 16) f->len = 16;
+	if (v) memcpy(f->v, v, f->len);
+}
+
+static void
+fcKeyIndex(char *k, NSUInteger i)
+{
+	k[0] = '#';
+	k[1] = (char)('0' + (i / 100) % 10);
+	k[2] = (char)('0' + (i / 10) % 10);
+	k[3] = (char)('0' + i % 10);
+	k[4] = 0;
+}
+
+static void
+fcSetIndex(id self, SEL cmd, const void *v, NSUInteger type, NSUInteger index)
+{
+	char k[8];
+	fcKeyIndex(k, index);
+	fcRecord(self, k, v, type);
+	((void (*)(id, SEL, const void *, NSUInteger, NSUInteger))gFCSetIndex)(self, cmd, v, type, index);
+}
+
+static void
+fcSetRange(id self, SEL cmd, const void *v, NSUInteger type, NSRange r)
+{
+	unsigned sz = fcSize(type);
+	for (NSUInteger i = 0; i < r.length; i++) {
+		char k[8];
+		fcKeyIndex(k, r.location + i);
+		fcRecord(self, k, (const uint8_t *)v + i * sz, type);
+	}
+	((void (*)(id, SEL, const void *, NSUInteger, NSRange))gFCSetRange)(self, cmd, v, type, r);
+}
+
+static void
+fcSetName(id self, SEL cmd, const void *v, NSUInteger type, NSString *name)
+{
+	fcRecord(self, name ? [name UTF8String] : "?", v, type);
+	((void (*)(id, SEL, const void *, NSUInteger, NSString *))gFCSetName)(self, cmd, v, type, name);
+}
+
+static void
+op2InstallFCHooks(void)
+{
+	Class c = objc_getClass("MTLFunctionConstantValues");
+	if (!c) return;
+	/* +alloc may hand out a private subclass that overrides the setters: hook the class of a real one */
+	id probe = [[c alloc] init];
+	Class k = probe ? [probe class] : c;
+	gFCSetIndex = class_replaceMethod(k, sel_registerName("setConstantValue:type:atIndex:"), (IMP)fcSetIndex, "v@:^vQQ");
+	gFCSetRange = class_replaceMethod(k, sel_registerName("setConstantValues:type:withRange:"), (IMP)fcSetRange, "v@:^vQ{_NSRange=QQ}");
+	gFCSetName = class_replaceMethod(k, sel_registerName("setConstantValue:type:withName:"), (IMP)fcSetName, "v@:^vQ@");
+}
+
+/* one line (<= 127 chars) to the kernel log, as 16 scalars of 8 bytes */
+static void
+kernelLog(const char *line)
+{
+	static io_connect_t conn;
+	if (!conn) {
+		io_service_t s = IOServiceGetMatchingService(kIOMasterPortDefault, IOServiceMatching("OP2GPU"));
+		if (!s) return;
+		IOServiceOpen(s, mach_task_self(), 0, &conn);
+		IOObjectRelease(s);
+		if (!conn) return;
+	}
+	uint64_t w[16] = {0};
+	size_t n = strlen(line);
+	if (n > 127) n = 127;
+	memcpy(w, line, n);
+	IOConnectCallScalarMethod(conn, 0x7c, w, 16, NULL, NULL);
+}
+
+static char *
+fcPut(char *p, char *end, const char *s)
+{
+	while (*s && p < end) *p++ = *s++;
+	return p;
+}
+
+/* "fc <prog> <function>" then "fc+ <key>=t<type>:<hex>" items, packed up to 120 chars a line */
+static void
+fcReport(NSString *fn, id constants)
+{
+	static char seenFns[64][48];
+	static unsigned seenN;
+	const char *name = [fn UTF8String];
+	struct fc_obj *o = constants ? fcFind((__bridge const void *)constants, 0) : NULL;
+	/* once per function per process: CA asks for the same few variants again and again */
+	for (unsigned i = 0; i < seenN && i < 64; i++)
+		if (!strcmp(seenFns[i], name)) return;
+	if (seenN < 64) {
+		size_t l = strlen(name);
+		if (l > 47) l = 47;
+		memcpy(seenFns[seenN], name, l);
+		seenFns[seenN][l] = 0;
+		seenN++;
+	}
+	char line[128], *p = line, *end = line + 120;
+	p = fcPut(p, end, "fc ");
+	p = fcPut(p, end, getprogname());
+	p = fcPut(p, end, " ");
+	p = fcPut(p, end, name);
+	p = fcPut(p, end, " ");
+	p = fcPut(p, end, constants ? [[[constants class] description] UTF8String] : "nil");
+	*p = 0;
+	kernelLog(line);
+	static const char hex[] = "0123456789abcdef";
+	p = line;
+	p = fcPut(p, end, "fc+");
+	for (unsigned i = 0; o && i < o->n; i++) {
+		char item[64], *q = item, *qe = item + sizeof item - 1;
+		q = fcPut(q, qe, " ");
+		q = fcPut(q, qe, o->vals[i].key);
+		q = fcPut(q, qe, "=t");
+		if (q + 2 < qe) { *q++ = hex[o->vals[i].type >> 4]; *q++ = hex[o->vals[i].type & 15]; }
+		q = fcPut(q, qe, ":");
+		for (unsigned b = 0; b < o->vals[i].len && q + 2 < qe; b++) {
+			*q++ = hex[o->vals[i].v[b] >> 4];
+			*q++ = hex[o->vals[i].v[b] & 15];
+		}
+		*q = 0;
+		if (p + (q - item) > end) {
+			*p = 0;
+			kernelLog(line);
+			p = fcPut(line, end, "fc+");
+		}
+		p = fcPut(p, end, item);
+	}
+	*p = 0;
+	kernelLog(line);
+}
+
 OP2_RETURNS_RETAINED static id
 libraryNewFunctionConstants(id self, SEL _cmd, NSString *name, __unused id constants, __unused NSError **error)
 {
+	fcReport(name, constants);
 	return libraryNewFunction(self, _cmd, name);
 }
 
@@ -1400,6 +1589,7 @@ registerOP2Metal(void)
 	if (!shownToThisProcess()) {
 		return;
 	}
+	op2InstallFCHooks();
 
 	gBaseDevice = objc_getClass("MTLIOAccelDevice");
 	if (gBaseDevice == Nil) {

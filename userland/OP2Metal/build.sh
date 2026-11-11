@@ -15,7 +15,8 @@ clang -target arm64-apple-ios12.0 \
       -isysroot "${SDK}" \
       -bundle \
       -fobjc-arc \
-      -Os \
+      -Oz \
+      -Wl,-dead_strip -Wl,-no_function_starts -Wl,-no_data_in_code_info \
       -fvisibility=hidden \
       -Wall \
       -Wno-deprecated-declarations \

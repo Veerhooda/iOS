@@ -1,0 +1,291 @@
+diff -ruN /Users/veerhooda/oneplus2/reference/hakios-xnu-kernel/tools/mesa/air/air_to_nir.c src/compiler/air/air_to_nir.c
+--- a/src/compiler/air/air_to_nir.c	2026-11-11 05:20:17
++++ b/src/compiler/air/air_to_nir.c	2026-11-11 06:19:06
+@@ -1146,6 +1146,203 @@
+    return air_const_uint(node->ops[i]->value, out);
+ }
+ 
++static int function_constant_index(struct air_ctx *c, const struct air_global *g);
++
++/*
++ * An attribute's integer that is an EXPRESSION, as iOS 12's Metal compiler writes `[[color(e)]]`
++ * whatever e is (QuartzCore's ca_uber_fragment_*: `[[color(color_attachment)]]`, a function constant):
++ *
++ *   !{!"air.render_target", ptr addrspace(2) @__metal_implicit_attr_int_expr_N, ...}
++ *   _GLOBAL__sub_I_...:  %v = load i32, ptr addrspace(2) @color_attachment
++ *                        store i32 %v, ptr addrspace(2) @__metal_implicit_attr_int_expr_N
++ *
++ * iOS 16's compiler folds the same expression to an i32 in the metadata. The value is needed
++ * while the interface is being laid out, before any code is translated, so it is resolved here
++ * from the bitcode: the global's one store, whose value is an integer constant or a load of a
++ * function constant -- which then answers with the pipeline's value (zero when none). Anything
++ * else (two stores, arithmetic) is refused, by returning false, rather than guessed.
++ */
++/* the one value stored into global G anywhere in the module, or NULL (no store, or more than one) */
++static const struct air_value *
++single_store(struct air_ctx *c, const struct air_value *g)
++{
++   const struct air_value *stored = NULL;
++   unsigned stores = 0;
++   for (unsigned fi = 0; fi < c->m->num_functions; fi++) {
++      const struct air_function *f = c->m->functions[fi];
++      for (unsigned b = 0; b < f->num_blocks; b++) {
++         const struct air_block *blk = &f->blocks[b];
++         for (unsigned k = 0; k < blk->num_insts; k++) {
++            const struct air_inst *in = blk->insts[k];
++            if (in->op == AIR_OP_STORE && in->num_operands >= 2 && in->operands[1] == g) {
++               stored = in->operands[0];
++               stores++;
++            }
++         }
++      }
++   }
++   return stores == 1 ? stored : NULL;
++}
++
++static uint64_t
++int_mask(unsigned bits)
++{
++   return bits >= 64 || bits == 0 ? ~0ull : (1ull << bits) - 1;
++}
++
++static int64_t
++sext_bits(uint64_t v, unsigned bits)
++{
++   if (bits == 0 || bits >= 64)
++      return (int64_t)v;
++   uint64_t m = 1ull << (bits - 1);
++   v &= int_mask(bits);
++   return (int64_t)((v ^ m) - m);
++}
++
++/*
++ * V as an integer known when the pipeline is created: a constant, a function constant (the
++ * pipeline's value, zero when none), a program-scope variable through its one static-initialiser
++ * store, or integer arithmetic, casts, compares and selects of those. False for anything else.
++ */
++static bool
++eval_const_int(struct air_ctx *c, const struct air_value *v, unsigned depth, uint64_t *out)
++{
++   if (!v || depth > 64)
++      return false;
++   if (air_const_uint(v, out))
++      return true;
++   if (v->kind != AIR_VALUE_INSTRUCTION)
++      return false;
++   const struct air_inst *in = (const struct air_inst *)v;
++   unsigned bits = in->base.type && in->base.type->kind == AIR_TYPE_INT ? in->base.type->bits : 64;
++   uint64_t a = 0, b = 0, t = 0;
++   switch (in->op) {
++   case AIR_OP_LOAD: {
++      const struct air_value *p = in->num_operands ? in->operands[0] : NULL;
++      if (!p || p->kind != AIR_VALUE_GLOBAL)
++         return false;
++      int idx = function_constant_index(c, (const struct air_global *)p);
++      if (idx >= 0) {
++         for (unsigned k = 0; c->options && k < c->options->num_constants; k++) {
++            if (c->options->constants[k].index == (unsigned)idx) {
++               *out = c->options->constants[k].bits & int_mask(bits);
++               return true;
++            }
++         }
++         return false;
++      }
++      if (!eval_const_int(c, single_store(c, p), depth + 1, &a))
++         return false;
++      *out = a & int_mask(bits);
++      return true;
++   }
++   case AIR_OP_BINOP:
++      if (in->num_operands < 2 || !eval_const_int(c, in->operands[0], depth + 1, &a) ||
++          !eval_const_int(c, in->operands[1], depth + 1, &b))
++         return false;
++      switch (in->sub) {
++      case AIR_BINOP_ADD: t = a + b; break;
++      case AIR_BINOP_SUB: t = a - b; break;
++      case AIR_BINOP_MUL: t = a * b; break;
++      case AIR_BINOP_UDIV: if (!b) return false; t = (a & int_mask(bits)) / (b & int_mask(bits)); break;
++      case AIR_BINOP_UREM: if (!b) return false; t = (a & int_mask(bits)) % (b & int_mask(bits)); break;
++      case AIR_BINOP_SHL: if (b >= bits) return false; t = a << b; break;
++      case AIR_BINOP_LSHR: if (b >= bits) return false; t = (a & int_mask(bits)) >> b; break;
++      case AIR_BINOP_ASHR: if (b >= bits) return false; t = (uint64_t)(sext_bits(a, bits) >> b); break;
++      case AIR_BINOP_AND: t = a & b; break;
++      case AIR_BINOP_OR: t = a | b; break;
++      case AIR_BINOP_XOR: t = a ^ b; break;
++      default: return false;
++      }
++      *out = t & int_mask(bits);
++      return true;
++   case AIR_OP_CAST: {
++      if (in->num_operands < 1 || !eval_const_int(c, in->operands[0], depth + 1, &a))
++         return false;
++      const struct air_type *st = in->operands[0]->type;
++      unsigned sbits = st && st->kind == AIR_TYPE_INT ? st->bits : 64;
++      switch (in->sub) {
++      case AIR_CAST_TRUNC: t = a; break;
++      case AIR_CAST_ZEXT: t = a & int_mask(sbits); break;
++      case AIR_CAST_SEXT: t = (uint64_t)sext_bits(a, sbits); break;
++      default: return false;
++      }
++      *out = t & int_mask(bits);
++      return true;
++   }
++   case AIR_OP_CMP: {
++      if (in->num_operands < 2 || !eval_const_int(c, in->operands[0], depth + 1, &a) ||
++          !eval_const_int(c, in->operands[1], depth + 1, &b))
++         return false;
++      const struct air_type *st = in->operands[0]->type;
++      unsigned ob = st && st->kind == AIR_TYPE_INT ? st->bits : 64;
++      uint64_t ua = a & int_mask(ob), ub = b & int_mask(ob);
++      int64_t sa = sext_bits(a, ob), sb = sext_bits(b, ob);
++      bool r;
++      switch (in->sub) {
++      case AIR_ICMP_EQ: r = ua == ub; break;
++      case AIR_ICMP_NE: r = ua != ub; break;
++      case AIR_ICMP_UGT: r = ua > ub; break;
++      case AIR_ICMP_UGE: r = ua >= ub; break;
++      case AIR_ICMP_ULT: r = ua < ub; break;
++      case AIR_ICMP_ULE: r = ua <= ub; break;
++      case AIR_ICMP_SGT: r = sa > sb; break;
++      case AIR_ICMP_SGE: r = sa >= sb; break;
++      case AIR_ICMP_SLT: r = sa < sb; break;
++      case AIR_ICMP_SLE: r = sa <= sb; break;
++      default: return false;
++      }
++      *out = r;
++      return true;
++   }
++   case AIR_OP_CALL: {
++      /* the one call a predicate goes through (air_intrinsics.c): a byte is true if not zero */
++      const struct air_value *callee = in->num_operands ? in->operands[0] : NULL;
++      if (!callee || !callee->name || in->num_operands < 2 ||
++          strcmp(callee->name, "air.normalize_function_constant_predicate") ||
++          !eval_const_int(c, in->operands[1], depth + 1, &a))
++         return false;
++      *out = a != 0;
++      return true;
++   }
++   case AIR_OP_SELECT:
++      if (in->num_operands < 3 || !eval_const_int(c, in->operands[0], depth + 1, &a))
++         return false;
++      if (!eval_const_int(c, in->operands[(a & 1) ? 1 : 2], depth + 1, &b))
++         return false;
++      *out = b & int_mask(bits);
++      return true;
++   default:
++      return false;
++   }
++}
++
++/*
++ * An attribute's integer that is an EXPRESSION, as iOS 12's Metal compiler writes `[[color(e)]]`
++ * (QuartzCore's ca_uber_fragment_*: `[[color(color_attachment)]]`, where color_attachment is itself
++ * `(frag_buffer_params >> 14) & 3` of a function constant):
++ *
++ *   !{!"air.render_target", ptr addrspace(2) @__metal_implicit_attr_int_expr_N, ...}
++ *   _GLOBAL__sub_I_...:  store i32 %v, ptr addrspace(2) @__metal_implicit_attr_int_expr_N
++ *
++ * iOS 16's compiler folds the expression to an i32 in the metadata. The value is needed while the
++ * interface is laid out, before any code is translated, so it is evaluated here from the bitcode
++ * (eval_const_int); what cannot be evaluated is refused rather than guessed.
++ */
++static bool
++md_int_expr(struct air_ctx *c, const struct air_md *node, unsigned i, uint64_t *out)
++{
++   if (md_int(node, i, out))
++      return true;
++   if (!node || i >= node->num_ops || !node->ops[i] || node->ops[i]->kind != AIR_MD_VALUE)
++      return false;
++   const struct air_value *g = node->ops[i]->value;
++   if (!g || g->kind != AIR_VALUE_GLOBAL)
++      return false;
++   return eval_const_int(c, single_store(c, g), 0, out);
++}
++
+ /* the index of the operand after the key, or -1 */
+ static int
+ md_key(const struct air_md *node, const char *key)
+@@ -2232,6 +2429,24 @@
+          .binding = index,
+          .is_image = write,
+       };
++      /* A texture behind a function-constant predicate that is FALSE in this pipeline is absent:
++       * no binding, no slot. QuartzCore's ca_uber_fragment_* declares eighteen ([[texture(0..17)]]),
++       * every one gated, against 16 slots in the Adreno's table; which of them exist is the
++       * pipeline's choice, and the predicate (written by the static initialiser from the constants)
++       * is evaluated here with the pipeline's values (eval_const_int). Unknown stays present.
++       */
++      const struct air_md *fcn = md_key_node(node, "air.function_constant");
++      if (fcn && fcn->num_ops && fcn->ops[0] && fcn->ops[0]->kind == AIR_MD_VALUE &&
++          fcn->ops[0]->value && fcn->ops[0]->value->kind == AIR_VALUE_GLOBAL) {
++         uint64_t on = 1;
++         if (eval_const_int(c, single_store(c, fcn->ops[0]->value), 0, &on) && (on & 0xff) == 0) {
++            const char *an = md_key_str(node, "air.arg_name");
++            air_note(c, "texture %u (%s) is absent in this pipeline: its predicate %s is false",
++                     (unsigned)index, an ? an : "unnamed", md_str(fcn, 2) ? md_str(fcn, 2) : "?");
++            c->params[param] = air_val_ptr(c, p);
++            return true;
++         }
++      }
+       add_resource(c, write ? AIR_RESOURCE_IMAGE : AIR_RESOURCE_TEXTURE, index, 0,
+                    sample || read, write, param, node);
+       c->params[param] = air_val_ptr(c, p);
+@@ -2430,7 +2645,7 @@
+          return true;
+       }
+       uint64_t n = 0;
+-      if (!md_int(node, rt_in + 1, &n))
++      if (!md_int_expr(c, node, rt_in + 1, &n))
+          return air_error(c, "interface: an air.render_target input without a target");
+       if (n >= MAX_DRAW_BUFFERS)
+          return air_error(c, "interface: air.render_target input %u", (unsigned)n);
+@@ -2558,7 +2773,10 @@
+    int rt = md_key(node, "air.render_target");
+    if (rt >= 0) {
+       uint64_t n = 0, dual = 0;
+-      md_int(node, rt + 1, &n);
++      /* iOS 12: the target may be an expression global (md_int_expr); a dual-source index after it
++       * is then one operand further on only when the target was a literal */
++      if (!md_int_expr(c, node, rt + 1, &n))
++         return air_error(c, "interface: an air.render_target output without a target");
+       md_int(node, rt + 2, &dual);
+       location = FRAG_RESULT_DATA0 + n;
+       index = dual;
+@@ -5951,6 +6169,19 @@
+  * through unchanged instead of deciding it, which is the only honest thing to
+  * do from here: the decision belongs with whoever fills `supplied` in.
+  */
++/*
++ * A module-scope constructor: what runs before the entry point. iOS 16's compiler puts it in
++ * section "air.static_init"; iOS 12's (QuartzCore's _GLOBAL__sub_I_ogl_metal_uber.metal) in the
++ * Mach-O static-initialiser section "__TEXT,__StaticInit,regular,pure_instructions". Missing the
++ * second ran no initialiser at all on iOS 12, and every variable it derives from the function
++ * constants (has_image_0A, the fc predicates, the attachment indices) read as zero.
++ */
++static bool
++is_static_init(const struct air_function *f)
++{
++   return f->section && (!strcmp(f->section, "air.static_init") || strstr(f->section, "__StaticInit"));
++}
++
+ static void
+ plan_global_folding(struct air_ctx *c)
+ {
+@@ -5975,7 +6206,7 @@
+ 
+       for (unsigned fi = 0; ok && fi < c->m->num_functions; fi++) {
+          const struct air_function *f = c->m->functions[fi];
+-         bool is_init = f->section && !strcmp(f->section, "air.static_init");
++         bool is_init = is_static_init(f);
+          for (unsigned bi = 0; ok && bi < f->num_blocks; bi++) {
+             const struct air_block *blk = &f->blocks[bi];
+             for (unsigned ii = 0; ok && ii < blk->num_insts; ii++) {
+@@ -6283,7 +6514,7 @@
+ {
+    for (unsigned i = 0; i < c->m->num_functions; i++) {
+       const struct air_function *f = c->m->functions[i];
+-      if (f->is_declaration || !f->section || strcmp(f->section, "air.static_init"))
++      if (f->is_declaration || !is_static_init(f))
+          continue;
+       if (f->num_args) {
+          air_error(c, "interface: a static initializer with arguments");
