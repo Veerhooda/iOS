@@ -370,3 +370,19 @@ Open, in order:
 2. The 3rd 1242x2208 IOSurface texture backboardd imports (id 1004 in round 23): what it is (a snapshot? the
    rasterised icon page?).
 3. Everything in section D phase 1 after 1.3.
+
+## I. Rounds fable-24 .. fable-27: the home screen on the GPU
+
+| Round | Change | Result |
+|---|---|---|
+| 24 | every draw traced from boot (`metal=2`) | every frame of the boot is the same 5 draws (wallpaper + status bar): under `metal=2` CA's GPU renderer never draws SpringBoard's main window (icons, dock, lock-screen clock) |
+| 25 | `metal=3` with today's fixes | backboardd draws the lock-screen content (clock and date text, a 550x135 offscreen pass); the 192 MB pool runs out (28 MB and 12 MB refused) and SpringBoard crashes after its 2592x2592 pass begins |
+| 26 | pool 384 MB under `metal=3`; refusal log with pool free/largest | no refusals; **lock screen fully correct** (`docs/img-fable26-lockscreen.png`); backboardd and SpringBoard crash in `stateOf` (`_op2State` ivar lookup) on a freed texture: the round-23 frame trace kept texture pointers across frames |
+| 27 | frame trace off and reset per pass | **home screen fully correct and stable for 15 min** (`docs/img-fable27-homescreen.png`): icons, labels, live Clock icon, wallpaper, page dots, status bar, dock icons; 3900+ commits, 0 hangs, 0 failed draws, 0 crashes, ~2.8 ms GPU per commit |
+
+So **`metal=3` is the mode to develop** (phase 3 of section D turned out to be required for phase 1). Open:
+1. The dock's material is a flat grey-blue band, not frosted glass: the blur passes (compile fixed in round 15) are not
+   yet verified (orientation of `point_coord`, the downsample chain).
+2. Page snapping and app launch under `metal=3` (failed in round 11, before every fix of rounds 13-27): needs a person
+   at the phone.
+3. Captures in the logs come from backboardd only; the kernel-side dump (C2) is still to do for CPU-vs-GPU diffs.

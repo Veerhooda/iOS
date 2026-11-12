@@ -10,6 +10,8 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #include <sys/sysctl.h>
+#include <sys/stat.h>
+#include <sys/time.h>
 #include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -197,12 +199,20 @@ mtlOpen(void)
 	}
 	gMtl = d;
 	op2_trace("G GPU rendering through op2mtl (%.60s)", M.device_name(d));
-	if (!strcmp(getprogname(), "backboardd"))   /* the last boot's frame captures are not this boot's */
-		for (unsigned n = 0; n < 8; n++) {
-			char path[64];
-			snprintf(path, sizeof path, "/private/var/tmp/op2cap-%u.bgra", n);
-			unlink(path);
-		}
+	/* the last boot's frame captures are not this boot's: remove captures older than this boot (a backboardd
+	 * restarted in the same boot keeps them: round fable-25 lost its captures that way) */
+	if (!strcmp(getprogname(), "backboardd")) {
+		struct timeval boot = { 0 };
+		size_t bl = sizeof boot;
+		if (sysctlbyname("kern.boottime", &boot, &bl, NULL, 0) == 0)
+			for (unsigned n = 0; n < 8; n++) {
+				char path[64];
+				struct stat st;
+				snprintf(path, sizeof path, "/private/var/tmp/op2cap-%u.bgra", n);
+				if (stat(path, &st) == 0 && st.st_mtime < boot.tv_sec)
+					unlink(path);
+			}
+	}
 	/* where the code is in this process, so a crash's pc can be found in the unstripped builds (atos -l) */
 	Dl_info a, b;
 	if (dladdr((const void *)M.version, &a) && dladdr((const void *)&mtlOpen, &b))
@@ -2021,7 +2031,9 @@ struct op2_encoder {
 
 /* one whole frame logged, draw by draw (round fable-22: icons and dock missing under metal=2): the first commit
  * that starts 60 s after the first GPU commit; at most 160 draws */
-static volatile int gFrameTrace;   /* 0 not yet, 1 tracing this commit, 2 done */
+/* off (2) by default: the trace kept texture pointers across frames and touched freed ones under metal=3
+ * (rounds fable-25/26: backboardd and SpringBoard crashed in stateOf's ivar lookup). 1 = trace. */
+static volatile int gFrameTrace = 2;
 static unsigned gFrameTraceN;
 static __unsafe_unretained id gTraceTex[2][4];
 
@@ -2110,9 +2122,10 @@ commandBufferRenderEncoder(id self, __unused SEL _cmd, MTLRenderPassDescriptor *
 		return enc;
 	}
 	M.set_pipeline(gMtl, NULL);   /* nothing carries over from another pass */
-	if (gFrameTrace == 1 && gFrameTraceN < 160) {
+	memset(gTraceTex, 0, sizeof gTraceTex);   /* never a texture from another pass (it may be freed by now) */
+	if (gFrameTrace == 1 && gFrameTraceN < 300) {
 		struct op2_texture *t0 = rpd.colorAttachments[0].texture ? textureOf(rpd.colorAttachments[0].texture) : NULL;
-		op2_trace("F pass -> %lux%lu fmt %lu load %lu%s", t0 ? (unsigned long)t0->width : 0UL,
+		op2_trace("F c%u pass -> %lux%lu fmt %lu load %lu%s", gStat.commits + 1, t0 ? (unsigned long)t0->width : 0UL,
 		          t0 ? (unsigned long)t0->height : 0UL, t0 ? (unsigned long)t0->pixelFormat : 0UL,
 		          (unsigned long)rpd.colorAttachments[0].loadAction, t0 && t0->iosurface ? " iosurface" : "");
 	}
@@ -2332,7 +2345,7 @@ traceDraw(struct op2_encoder *e, const char *what)
 static void
 frameTraceDraw(struct op2_encoder *e, const char *kind, NSUInteger count)
 {
-	if (gFrameTrace != 1 || gFrameTraceN >= 160)
+	if (gFrameTrace != 1 || gFrameTraceN >= 300)
 		return;
 	gFrameTraceN++;
 	struct op2_pipeline *p = pipelineOf(e->pipeline);
@@ -2345,8 +2358,8 @@ frameTraceDraw(struct op2_encoder *e, const char *kind, NSUInteger count)
 			                      (unsigned long)t->height, (unsigned long)t->pixelFormat,
 			                      t->gpu ? "" : "!cpu");
 	}
-	op2_trace("F%u %s P%u%s n%lu%s", gFrameTraceN, kind, p ? p->serial : 0, e->drawable ? "" : " SKIP",
-	          (unsigned long)count, tx);
+	op2_trace("F%u c%u %s P%u%s n%lu%s", gFrameTraceN, gStat.commits + 1, kind, p ? p->serial : 0,
+	          e->drawable ? "" : " SKIP", (unsigned long)count, tx);
 }
 
 static void
@@ -2491,11 +2504,10 @@ gpuCommit(void)
 	static uint64_t sFirstCommitAt;
 	if (!sFirstCommitAt)
 		sFirstCommitAt = mach_absolute_time();
-	if (gFrameTrace == 1) {
+	/* round fable-24: every draw from the first commit on, until 300 are logged */
+	if (gFrameTrace == 1 && gFrameTraceN >= 300) {
 		gFrameTrace = 2;
-		op2_trace("F end: %u draws in commit %u, %u skipped so far", gFrameTraceN, gStat.commits, gStat.skipped);
-	} else if (gFrameTrace == 0 && msSince(sFirstCommitAt) > 60000) {
-		gFrameTrace = 1;   /* the NEXT command buffer's draws are logged */
+		op2_trace("F end: 300 draws by commit %u, %u skipped", gStat.commits, gStat.skipped);
 	}
 	if (done && msSince(sFirstCommitAt) > 45000)
 		captureMaybe(gStat.commits);
