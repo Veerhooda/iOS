@@ -412,17 +412,17 @@ op2_tsens_read(int n)
  * the GCC clock branches and, only if the core is powered and clocked (a gated block's registers can hang the
  * bus), the DWC3 global/device registers and the QSCRATCH HS PHY controls. Boot-arg op2usb=0 skips it.
  */
-static void
+static bool
 op2_usb_probe(void)
 {
 	uint32_t en = 1;
 	PE_parse_boot_argn("op2usb", &en, sizeof(en));
 	if (!en)
-		return;
+		return false;
 	volatile uint32_t *gcc = (volatile uint32_t *)ml_io_map(0xfc400000, 0x2000);
 	if (!gcc) {
 		printf("OP2 USB: cannot map GCC\n");
-		return;
+		return false;
 	}
 	uint32_t gdsc = gcc[0x1e84 / 4];
 	static const struct { uint32_t off; const char *name; } cb[] = {
@@ -442,12 +442,12 @@ op2_usb_probe(void)
 	if (!powered || !clocked) {
 		printf("OP2 USB: core %s/%s: DWC3 registers NOT read (would hang the bus)\n",
 		    powered ? "powered" : "unpowered", clocked ? "clocked" : "gated");
-		return;
+		return false;
 	}
 	volatile uint32_t *d = (volatile uint32_t *)ml_io_map(0xf9200000, 0x100000);
 	if (!d) {
 		printf("OP2 USB: cannot map DWC3\n");
-		return;
+		return false;
 	}
 #define R(off) d[(off) / 4]
 	printf("OP2 USB: DWC3 GSNPSID %08x GCTL %08x GSTS %08x GUSB2PHYCFG %08x GUSB3PIPECTL %08x GHWPARAMS0 %08x\n",
@@ -457,6 +457,7 @@ op2_usb_probe(void)
 	printf("OP2 USB: QSCRATCH ctrl %08x general_cfg %08x hs_phy_ctrl %08x param_override %08x ss_phy_ctrl %08x\n",
 	    R(0xf8804), R(0xf8808), R(0xf8810), R(0xf8814), R(0xf8830));
 #undef R
+	return true;
 }
 
 static void
@@ -472,7 +473,10 @@ op2_thermal_thread(__unused void *param, __unused wait_result_t wr)
 		return;
 	}
 	op2_tsens_calibrate();
-	op2_usb_probe();
+	extern void op2_usb_start(void);
+	if (op2_usb_probe()) {
+		op2_usb_start();   /* bsd/dev/op2_usb.c: the CDC-ACM console (LK left the core powered and clocked) */
+	}
 	int crit_count = 0;
 	for (uint32_t tick = 0;; tick++) {
 		int t[16], mx = -1000, valid = 0;
@@ -486,7 +490,7 @@ op2_thermal_thread(__unused void *param, __unused wait_result_t wr)
 		}
 		op2_temp_max = mx;
 		if (tick == 150) {
-			op2_usb_probe();   /* again at 5 min: the boot-time lines can be overwritten in the ramoops ring */
+			(void)op2_usb_probe();   /* again at 5 min: the boot-time lines can be overwritten in the ramoops ring */
 		}
 		if (tick == 0 || (tick % 150) == 0) {   /* all sixteen at start and every 5 min */
 			printf("OP2 THERM: %d valid; C: %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d %d\n", valid, t[0], t[1],

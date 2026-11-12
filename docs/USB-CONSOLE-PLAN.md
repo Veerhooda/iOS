@@ -123,3 +123,19 @@ op2_snapshot.c `op2_usb_probe` (read-only, boot and +5 min):
 
 So stage 1 needs no GDSC/clock/PHY/regulator work: own event buffer, DCTL.CSFTRST, DCFG speed HS (0) and address 0,
 DEVTEN, EP0 start config + SETUP TRB, RUN_STOP, then enumeration (gadget.c/ep0.c) and CDC-ACM.
+
+## Stage 1 WORKS (round fable-50, 2026-11-13 02:25)
+
+bsd/dev/op2_usb.c (added to bsd/conf/files; started from op2_snapshot.c after op2_usb_probe; console bytes via
+pexpert/arm/pe_serial.c `op2_usb_putc_hook` in op2_ramoops_td0): takeover (RUN_STOP off, CSFTRST, own event
+buffer masked/polled, DCFG high speed, DEVTEN reset/connect/disconnect, EP0 STARTCFG + config, SETUP TRB, RUN),
+EP0 state machine (GET_DESCRIPTOR device/config/string, SET_ADDRESS, SET_CONFIGURATION, GET_STATUS,
+GET/SET_LINE_CODING, SET_CONTROL_LINE_STATE; else stall), CDC-ACM (EP1 bulk 512 both ways, EP2 interrupt),
+console ring 64 KB drained to bulk IN by a 1 ms polling thread, bulk OUT into a 4 KB ring (for stage 2).
+
+First boot: the Mac listed "OP2 USB console" (0525:a4a7) at high speed; macOS asked to allow the accessory (Apple
+silicon accessory security: click Allow every new boot it asks); /dev/cu.usbmodem00011 streamed the live kernel log.
+Watch: `screen /dev/cu.usbmodem* 115200`, or tools/usb-console-watch.sh (records logs/usb-console.log during a
+round).
+
+Next: stage 2, the shell (dash + toybox, /dev/op2usb character device on the in/out rings, launchd job).
