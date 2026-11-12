@@ -1958,6 +1958,15 @@ deviceNewRenderPipelineState(__unused id self, __unused SEL _cmd, MTLRenderPipel
 	    !fillFunction(&d->fragment, pd.fragmentFunction, p->f, sizeof p->f)) {
 		op2_log(@"G pipeline #%u: vertex %@ / fragment %@ not on the GPU", p->serial, pd.vertexFunction.name,
 		        pd.fragmentFunction.name);
+		/* blur pipelines arrive like this (FABLE-REVIEW H/I): what IS in the descriptor, and who asked */
+		id vf = pd.vertexFunction, ff = pd.fragmentFunction;
+		char caller[64];
+		addrText((uint64_t)__builtin_return_address(0), caller, sizeof caller);
+		op2_trace("G pipeline #%u desc %s: vf %p %s ff %p %s label %s samples %lu topo %lu from %s", p->serial,
+		          object_getClassName(pd), (__bridge void *)vf, vf ? object_getClassName(vf) : "-",
+		          (__bridge void *)ff, ff ? object_getClassName(ff) : "-",
+		          pd.label ? [pd.label UTF8String] : "-", (unsigned long)pd.sampleCount,
+		          (unsigned long)pd.inputPrimitiveTopology, caller);
 		free(d);
 		return pipeline;
 	}
@@ -2034,6 +2043,7 @@ struct op2_encoder {
 /* off (2) by default: the trace kept texture pointers across frames and touched freed ones under metal=3
  * (rounds fable-25/26: backboardd and SpringBoard crashed in stateOf's ivar lookup). 1 = trace. */
 static volatile int gFrameTrace = 2;
+static int gFrameTraceOn;   /* set by metal=8x before any Metal object exists */
 static unsigned gFrameTraceN;
 static __unsafe_unretained id gTraceTex[2][4];
 
@@ -2504,6 +2514,11 @@ gpuCommit(void)
 	static uint64_t sFirstCommitAt;
 	if (!sFirstCommitAt)
 		sFirstCommitAt = mach_absolute_time();
+	/* from commit 1000: the home screen with its dock (round fable-27 was there by commit 1282) */
+	if (gFrameTraceOn == 1 && gFrameTrace == 2 && gFrameTraceN == 0 && gStat.commits >= 1000) {
+		gFrameTraceOn = 2;
+		gFrameTrace = 1;   /* from the next command buffer on */
+	}
 	/* round fable-24: every draw from the first commit on, until 300 are logged */
 	if (gFrameTrace == 1 && gFrameTraceN >= 300) {
 		gFrameTrace = 2;
@@ -2748,6 +2763,7 @@ shownToThisProcess(void)
 			 *   metal=2   compositor on the GPU          metal=12  the same without framebuffer fetch
 			 *   metal=22  16-bit varyings left 16-bit    metal=32  both
 			 *   metal=42  framebuffer fetch through a shadow copy (the fable-16/17 way) instead of in place
+			 *   metal=83  every process on the GPU + the whole-frame draw trace
 			 */
 			int v = atoi(at + 6);
 			level = v % 10;
@@ -2757,6 +2773,8 @@ shownToThisProcess(void)
 				setenv("OP2MTL_F16VARY", "1", 1);
 			if ((v / 10) & 4)   /* metal=42: framebuffer fetch through a shadow copy instead of in place */
 				setenv("OP2MTL_FBCOPY", "1", 1);
+			if ((v / 10) & 8)   /* metal=83: metal=3 + the whole-frame draw trace (first 300 draws) */
+				gFrameTraceOn = 1;
 		}
 	}
 

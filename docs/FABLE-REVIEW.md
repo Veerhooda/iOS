@@ -386,3 +386,16 @@ So **`metal=3` is the mode to develop** (phase 3 of section D turned out to be r
 2. Page snapping and app launch under `metal=3` (failed in round 11, before every fix of rounds 13-27): needs a person
    at the phone.
 3. Captures in the logs come from backboardd only; the kernel-side dump (C2) is still to do for CPU-vs-GPU diffs.
+
+## J. The dock blur (rounds fable-28, fable-29)
+
+- The flat grey-blue dock was **not a GPU bug**: `tools/rootfs_prefs.py` turns on Reduce Transparency
+  (`EnhancedBackgroundContrastEnabled`) for CPU-drawn boots, where software blur is the most expensive effect. With it on,
+  iOS draws materials as opaque panels and never asks for a blur. The fragment-only pipelines (#3/#6/#7/#12/#14/#15,
+  `vf 0x0` in round 28) are CA pre-compiling fragment functions; it never draws with them (0 skipped draws).
+- Round 29: Reduce Transparency off (the phone's `com.apple.Accessibility.plist`, a same-size reference edit, original
+  in `backup/rootfs/com.apple.Accessibility.plist.g5c-orig`). CA builds `downsample_blur_vert + narrow_blur_11_frag`
+  and the dock is the iOS 12 material: the wallpaper beneath it, blurred and tinted, the right way up
+  (`docs/img-fable29-homescreen-blur.png`). 0 hangs, 0 failed draws, 0 crashes; ~2.8 ms GPU per commit.
+- `tools/rootfs_prefs.py`: `OP2_BLUR=1` (inside the `sudo`) leaves Reduce Transparency off on a rebuilt rootfs; the
+  default stays on for CPU boots.
