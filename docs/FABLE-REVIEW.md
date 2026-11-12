@@ -399,3 +399,32 @@ So **`metal=3` is the mode to develop** (phase 3 of section D turned out to be r
   (`docs/img-fable29-homescreen-blur.png`). 0 hangs, 0 failed draws, 0 crashes; ~2.8 ms GPU per commit.
 - `tools/rootfs_prefs.py`: `OP2_BLUR=1` (inside the `sudo`) leaves Reduce Transparency off on a rebuilt rootfs; the
   default stays on for CPU boots.
+
+## K. Rounds fable-30 .. fable-38: compile cache, Wallpaper crash, iPhone X gestures
+
+- **Translation cache** (op2mtl `tcache_*`): translate()'s output (NIR via nir_serialize + air_shader_info) is kept in
+  memory and in `/private/var/mobile/Library/Caches/op2mtl/<sha1>` (key: dylib LC_UUID, function name, stage,
+  bitcode, constants). `/private/var/tmp` kept nothing across boots (round 36). Warm boot (round 38): backboardd 512
+  lookups, 0 translated, 4.5 s loading, against ~99 s translating cold; backboardd idle ~1 min after boot instead of
+  100% for several. The per-process self-test (serialize, deserialize, serialize, compare) passes; it failed in
+  round 32 only because the raw structs carried pointers (now cleared before writing). OP2MTL_NOCACHE turns it off.
+- **Settings > Wallpaper crash** (rounds 30..32, SpringBoard in CoreVideo+0x18fe0): `IOSurfaceCopyAllValues` returned
+  NULL because the kernel ignored the value selectors. IOSurface.framework reads state page +0x18 (values generation)
+  and +0x20 (serialized size), returns NULL without asking while the size is 0, and CoreVideo applies a function to
+  that NULL. OP2Surface now stores values: sel 9 (`[value, key]` or `[dict]`, binary-serialized after an 8-byte
+  `{id, pad}`) and sel 10 (8 header bytes + OSSerializeBinary dictionary, kIOReturnNoSpace when the buffer is short).
+- **newTextureLayoutWithDescriptor** is OFF again (OP2METAL_TEXLAYOUT=1 turns it on): answering it sent the dock's
+  648x648 ASTC material through watermark/copyFromLinearBytes/finalizeTextureMemory, none implemented: black dock.
+- **Crash reports**: OP2Metal logs uncaught exceptions and SIGABRT/SEGV/BUS/ILL/TRAP in every process it is shown to,
+  as `C <proc>: ...` lines (reason, every image's __crash_info message, image+offset frames). ReportCrash writes nothing.
+- **iPhone X gestures** (tried rounds 33..35, reverted): MobileGestalt HomeButtonType (`JwLB44/jEB8aFDpXQ16Tuw`) 2 in the
+  cache plist's CacheExtra and/or BaseBoard `-[BSPlatform homeButtonType]` (dyld cache +0x3655d00: `mov x8,#2` + 4 nop)
+  turn the X UI on (home bar shows). Found: Control Center crashes twice (UIKit status bar asks the 6 Plus visual
+  provider for X-only parts: an NSArray into setByAddingObjectsFromSet:, then CGRectNull -> NaN layer position); the
+  first is guarded in OP2Metal, the second is not. Blocker: **bottom-edge swipes never trigger a system gesture** (not
+  the X home/unlock gesture, not the 6 Plus Control Center either), while top-edge ones do -- the cover sheet follows
+  the finger and falls back. Next: how backboardd decides a touch starts at the bottom edge (digitizer edge fields?).
+  Backups: `backup/rootfs/com.apple.MobileGestalt.plist.g5c-orig`, `dyld-BaseBoard-homeButtonType.0x3655d00.orig`.
+  Kernel: `op2hs=0` turns the virtual Home strip off; `op2_autoinput=3` is the unattended gesture script.
+- In X mode SpringBoard re-saved the wallpaper (HomeBackground*/Original* gone, LockBackground.cpbitmap 2592x2592 kept,
+  both screens "WWDC2018"); the home screen draws it correctly in normal mode (round 36).

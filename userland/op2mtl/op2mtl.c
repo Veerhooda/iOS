@@ -34,6 +34,16 @@
 #include "util/u_memory.h"
 #include "util/ralloc.h"
 #include <xf86drm.h>
+#include <dlfcn.h>
+#include <mach-o/loader.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
+#include "compiler/nir/nir_serialize.h"
+#include "util/blob.h"
+#include "util/mesa-sha1.h"
 
 #include "op2mtl.h"
 
@@ -295,6 +305,25 @@ struct binding {
    size_t bytes_len;
 };
 
+/* One translated function, serialized: the NIR air_to_nir made plus its air_shader_info (see tcache_store). */
+struct tcache_entry {
+   unsigned char key[20];
+   void *data;
+   size_t size;
+};
+
+struct tcache {
+   bool off;                          /* OP2MTL_NOCACHE */
+   bool checked;                      /* the round-trip self-test ran (first store of the process) */
+   unsigned char salt[20];            /* this dylib's identity: a rebuilt front end never reads old entries */
+   struct tcache_entry *e;
+   unsigned n, cap;
+   unsigned hit_mem, hit_disk, miss, bad, stored, write_said;
+   double ms_translate, ms_load;      /* time spent translating on a miss, loading on a hit */
+};
+
+static void tcache_init(struct tcache *c);
+
 struct op2mtl_device {
    pthread_mutex_t lock;
    struct pipe_screen *screen;
@@ -315,6 +344,7 @@ struct op2mtl_device {
    op2mtl_texture *att0;              /* this pass's colour attachment 0 (the fetch reads it in place) */
    uint64_t fb_draws, fb_pixels;
    uint32_t fb_said;
+   struct tcache tcache;              /* translated functions (translate()): memory, then disk */
 
    bool in_pass;
    struct pipe_framebuffer_state fb;
@@ -544,6 +574,7 @@ op2mtl_device_open(void)
       return fail("device: %s gave no context", dev->screen->get_name(dev->screen));
    dev->nir_opts[0] = dev->screen->get_compiler_options(dev->screen, PIPE_SHADER_IR_NIR, PIPE_SHADER_VERTEX);
    dev->nir_opts[1] = dev->screen->get_compiler_options(dev->screen, PIPE_SHADER_IR_NIR, PIPE_SHADER_FRAGMENT);
+   tcache_init(&dev->tcache);
 
    dev->dsa = dev->pipe->create_depth_stencil_alpha_state(dev->pipe,
       &(struct pipe_depth_stencil_alpha_state){ 0 });
@@ -640,6 +671,317 @@ op2mtl_library_free(op2mtl_library *lib)
 
 /* -- pipelines ---------------------------------------------------------------------------------------- */
 
+/*
+ * THE TRANSLATION CACHE. Translating a function out of AIR is most of what a pipeline costs: on the host CA's uber
+ * fragment function takes 19.1 ms in air_to_nir of 21.7 ms in all, and the phone pays ~0.7 s a pipeline, which is
+ * what made Home dead for the first 2-3 minutes after boot while backboardd compiled (round fable-31). The NIR the
+ * front end makes depends only on the function's bitcode, its name, its stage and the function-constant values, so
+ * it is kept -- serialized with nir_serialize, beside the air_shader_info the rest of pipeline_new reads -- first in
+ * memory (a vertex function is shared by many pipelines) and then on disk, where the next process and the next
+ * boot find it. Only translate()'s output is kept: link_varyings, lower_fb_fetch and the rest still run per
+ * pipeline. The key carries this dylib's LC_UUID, so a rebuilt front end never reads an old entry.
+ * OP2MTL_NOCACHE turns it off. The first store of every process deserializes what it wrote and serializes it
+ * again, and turns the cache off if the bytes differ.
+ */
+#define TCACHE_DIR    "/private/var/mobile/Library/Caches/op2mtl"   /* /var/tmp kept none (round fable-36) */
+#define TCACHE_MAGIC  0x4332504fu   /* "OP2C" */
+#define TCACHE_FORMAT 2
+
+static double
+now_ms(void)
+{
+   struct timespec ts;
+   clock_gettime(CLOCK_MONOTONIC, &ts);
+   return ts.tv_sec * 1e3 + ts.tv_nsec / 1e6;
+}
+
+static void
+tcache_init(struct tcache *c)
+{
+   c->off = getenv("OP2MTL_NOCACHE") != NULL;
+   struct mesa_sha1 h;
+   _mesa_sha1_init(&h);
+   unsigned v[2] = { OP2MTL_VERSION, TCACHE_FORMAT };
+   _mesa_sha1_update(&h, v, sizeof v);
+   /* the image's LC_UUID, which ld64 derives from the contents: tools/op2hfs.py writes a new dylib IN PLACE, so its
+    * size, mtime and inode can all stay what they were while the code changes */
+   Dl_info dl;
+   const struct uuid_command *uc = NULL;
+   if (dladdr((void *)op2mtl_version, &dl) && dl.dli_fbase) {
+      const struct mach_header_64 *mh = dl.dli_fbase;
+      const struct load_command *lc = (const void *)(mh + 1);
+      for (uint32_t i = 0; i < mh->ncmds && !uc; i++, lc = (const void *)((const char *)lc + lc->cmdsize))
+         if (lc->cmd == LC_UUID)
+            uc = (const void *)lc;
+   }
+   if (uc) {
+      _mesa_sha1_update(&h, uc->uuid, sizeof uc->uuid);
+   } else {
+      c->off = true;   /* no identity for the front end: an entry could outlive the code that made it */
+      say("cache: off, no identity for this dylib");
+   }
+   _mesa_sha1_final(&h, c->salt);
+   if (!c->off) {
+      int made = mkdir(TCACHE_DIR, 0777);
+      int e = made ? errno : 0;
+      chmod(TCACHE_DIR, 0777);   /* every process on the GPU shares it (metal=3); umask took the bits */
+      say("cache: %s (%s, uid %d)", TCACHE_DIR, !made ? "created" : e == EEXIST ? "exists" : strerror(e), (int)getuid());
+   }
+}
+
+static void
+tcache_key(const struct tcache *c, const struct air_metallib_function *fn, gl_shader_stage stage,
+           const struct air_constant_value *fc, unsigned num_fc, unsigned char key[20])
+{
+   struct mesa_sha1 h;
+   _mesa_sha1_init(&h);
+   _mesa_sha1_update(&h, c->salt, 20);
+   _mesa_sha1_update(&h, fn->name, strlen(fn->name) + 1);
+   uint32_t st = stage;
+   _mesa_sha1_update(&h, &st, sizeof st);
+   uint64_t size = fn->bitcode_size;
+   _mesa_sha1_update(&h, &size, sizeof size);
+   _mesa_sha1_update(&h, fn->bitcode, fn->bitcode_size);
+   for (unsigned i = 0; i < num_fc; i++) {
+      uint64_t w[3] = { fc[i].index, fc[i].bits, fc[i].supplied };
+      _mesa_sha1_update(&h, w, sizeof w);
+   }
+   _mesa_sha1_final(&h, key);
+}
+
+static void
+put_str(struct blob *b, const char *s)
+{
+   blob_write_uint8(b, s != NULL);
+   if (s)
+      blob_write_string(b, s);
+}
+
+static const char *
+get_str(void *mem, struct blob_reader *r)
+{
+   return blob_read_uint8(r) ? ralloc_strdup(mem, blob_read_string(r)) : NULL;
+}
+
+/* a copy of an array with its pointers cleared: the bytes then depend only on the shader (the self-test compares them) */
+#define TCACHE_PUT_ARRAY(b, arr, count, clear)                                          \
+   do {                                                                                 \
+      for (unsigned i_ = 0; i_ < (count); i_++) {                                       \
+         __typeof__(*(arr)) e_;                                                         \
+         memcpy(&e_, &(arr)[i_], sizeof e_);   /* padding too: the bytes must repeat */  \
+         clear;                                                                         \
+         blob_write_bytes(b, &e_, sizeof e_);                                           \
+      }                                                                                 \
+   } while (0)
+
+static void
+tcache_write(struct blob *b, const nir_shader *nir, const struct air_shader_info *info)
+{
+   blob_write_uint32(b, TCACHE_MAGIC);
+   blob_write_uint32(b, TCACHE_FORMAT);
+   struct air_shader_info flat;
+   memcpy(&flat, info, sizeof flat);   /* the scalars (padding included); every pointer is written after it and fixed on load */
+   flat.entry_point = NULL;
+   flat.resources = NULL;
+   flat.varyings = NULL;
+   flat.vertex_attributes = NULL;
+   flat.notes = NULL;
+   blob_write_bytes(b, &flat, sizeof flat);
+   put_str(b, info->entry_point);
+   TCACHE_PUT_ARRAY(b, info->resources, info->num_resources, (e_.name = NULL, e_.type_name = NULL));
+   for (unsigned i = 0; i < info->num_resources; i++) {
+      put_str(b, info->resources[i].name);
+      put_str(b, info->resources[i].type_name);
+   }
+   TCACHE_PUT_ARRAY(b, info->varyings, info->num_varyings, e_.name = NULL);
+   for (unsigned i = 0; i < info->num_varyings; i++)
+      put_str(b, info->varyings[i].name);
+   TCACHE_PUT_ARRAY(b, info->vertex_attributes, info->num_vertex_attributes,
+                    (e_.name = NULL, e_.type_name = NULL, e_.function_constant = NULL));
+   for (unsigned i = 0; i < info->num_vertex_attributes; i++) {
+      put_str(b, info->vertex_attributes[i].name);
+      put_str(b, info->vertex_attributes[i].type_name);
+      put_str(b, info->vertex_attributes[i].function_constant);
+   }
+   for (unsigned i = 0; i < info->num_notes; i++)
+      put_str(b, info->notes[i]);
+   nir_serialize(b, nir, false);
+}
+
+#define TCACHE_ARRAY(mem, r, field, count)                                              \
+   do {                                                                                 \
+      size_t bytes_ = (count) * sizeof *(field);                                        \
+      void *a_ = bytes_ ? ralloc_size(mem, bytes_) : NULL;                              \
+      if (bytes_)                                                                       \
+         blob_copy_bytes(r, a_, bytes_);                                                \
+      (field) = a_;                                                                     \
+   } while (0)
+
+static nir_shader *
+tcache_read(void *mem, const void *data, size_t size, const nir_shader_compiler_options *opts,
+            struct air_shader_info *info)
+{
+   struct blob_reader r;
+   blob_reader_init(&r, data, size);
+   if (blob_read_uint32(&r) != TCACHE_MAGIC || blob_read_uint32(&r) != TCACHE_FORMAT)
+      return NULL;
+   blob_copy_bytes(&r, info, sizeof *info);
+   info->entry_point = get_str(mem, &r);
+   TCACHE_ARRAY(mem, &r, info->resources, info->num_resources);
+   for (unsigned i = 0; i < info->num_resources && !r.overrun; i++) {
+      info->resources[i].name = get_str(mem, &r);
+      info->resources[i].type_name = get_str(mem, &r);
+   }
+   TCACHE_ARRAY(mem, &r, info->varyings, info->num_varyings);
+   for (unsigned i = 0; i < info->num_varyings && !r.overrun; i++)
+      info->varyings[i].name = get_str(mem, &r);
+   TCACHE_ARRAY(mem, &r, info->vertex_attributes, info->num_vertex_attributes);
+   for (unsigned i = 0; i < info->num_vertex_attributes && !r.overrun; i++) {
+      info->vertex_attributes[i].name = get_str(mem, &r);
+      info->vertex_attributes[i].type_name = get_str(mem, &r);
+      info->vertex_attributes[i].function_constant = get_str(mem, &r);
+   }
+   info->notes = info->num_notes ? ralloc_array(mem, const char *, info->num_notes) : NULL;
+   for (unsigned i = 0; i < info->num_notes && !r.overrun; i++)
+      info->notes[i] = get_str(mem, &r);
+   if (r.overrun)
+      return NULL;
+   nir_shader *nir = nir_deserialize(mem, opts, &r);
+   return r.overrun ? NULL : nir;
+}
+
+static void
+tcache_path(const unsigned char key[20], char *path, size_t n)
+{
+   char hex[41];
+   _mesa_sha1_format(hex, key);
+   snprintf(path, n, TCACHE_DIR "/%s", hex);
+}
+
+static struct tcache_entry *
+tcache_find(struct tcache *c, const unsigned char key[20])
+{
+   for (unsigned i = 0; i < c->n; i++)
+      if (!memcmp(c->e[i].key, key, 20))
+         return &c->e[i];
+   return NULL;
+}
+
+static struct tcache_entry *
+tcache_add(struct tcache *c, const unsigned char key[20], void *data, size_t size)
+{
+   if (c->n == c->cap) {
+      c->cap = c->cap ? c->cap * 2 : 64;
+      c->e = realloc(c->e, c->cap * sizeof c->e[0]);
+   }
+   struct tcache_entry *e = &c->e[c->n++];
+   memcpy(e->key, key, 20);
+   e->data = data;
+   e->size = size;
+   return e;
+}
+
+/* the entry from memory, else from disk (and then kept in memory); NULL if neither has it */
+static struct tcache_entry *
+tcache_lookup(struct tcache *c, const unsigned char key[20], bool *from_disk)
+{
+   struct tcache_entry *e = tcache_find(c, key);
+   *from_disk = false;
+   if (e)
+      return e;
+   char path[128];
+   tcache_path(key, path, sizeof path);
+   int fd = open(path, O_RDONLY);
+   if (fd < 0)
+      return NULL;
+   struct stat st;
+   void *data = NULL;
+   if (!fstat(fd, &st) && st.st_size > 0 && st.st_size < (64 << 20) && (data = malloc(st.st_size)) &&
+       read(fd, data, st.st_size) == st.st_size) {
+      close(fd);
+      *from_disk = true;
+      return tcache_add(c, key, data, st.st_size);
+   }
+   close(fd);
+   free(data);
+   return NULL;
+}
+
+static void
+tcache_store(struct tcache *c, const unsigned char key[20], const nir_shader *nir,
+             const struct air_shader_info *info, const nir_shader_compiler_options *opts)
+{
+   struct blob b;
+   blob_init(&b);
+   tcache_write(&b, nir, info);
+   if (b.out_of_memory) {
+      blob_finish(&b);
+      return;
+   }
+   if (!c->checked) {
+      /* the round trip, once a process: what comes back must serialize to the same bytes */
+      c->checked = true;
+      void *tmp = ralloc_context(NULL);
+      struct air_shader_info back;
+      nir_shader *again = tcache_read(tmp, b.data, b.size, opts, &back);
+      struct blob b2;
+      blob_init(&b2);
+      if (again)
+         tcache_write(&b2, again, &back);
+      /* tcache_write clears every pointer, so the whole blob must come back byte for byte */
+      bool same = again && b2.size == b.size && !memcmp(b2.data, b.data, b.size);
+      if (again && !same) {
+         size_t at = 0;
+         while (at < b.size && at < b2.size && b.data[at] == b2.data[at])
+            at++;
+         say("cache: self-test: %zu vs %zu bytes, first difference at %zu", b.size, b2.size, at);
+      }
+      say("cache: self-test %s (%zu bytes)", same ? "passed" : "FAILED, cache off", b.size);
+      blob_finish(&b2);
+      ralloc_free(tmp);
+      if (!same) {
+         c->off = true;
+         blob_finish(&b);
+         return;
+      }
+   }
+   void *data;
+   size_t size;
+   blob_finish_get_buffer(&b, &data, &size);
+   tcache_add(c, key, data, size);
+   char path[128], tmp[160];
+   tcache_path(key, path, sizeof path);
+   snprintf(tmp, sizeof tmp, "%s.%d.tmp", path, (int)getpid());
+   int fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0666);
+   if (fd < 0) {
+      /* a sandboxed process cannot write here: it keeps the entry in memory only */
+      if (!c->write_said++)
+         say("cache: cannot create %s: %s", tmp, strerror(errno));
+      return;
+   }
+   bool ok = write(fd, data, size) == (ssize_t)size;
+   fchmod(fd, 0666);
+   if (ok)
+      fsync(fd);   /* the phone resets at its deadline: an entry should outlive the boot that made it */
+   close(fd);
+   if (!ok || rename(tmp, path)) {
+      if (!c->write_said++)
+         say("cache: cannot store %s: %s", path, strerror(errno));
+      unlink(tmp);
+      return;
+   }
+   c->stored++;
+}
+
+static void
+tcache_report(struct tcache *c)
+{
+   unsigned n = c->hit_mem + c->hit_disk + c->miss;
+   if (n % 32 == 0)
+      say("cache: %u lookups: %u memory, %u disk, %u translated (%.0f ms translating, %.0f ms loading), %u bad, %u stored",
+          n, c->hit_mem, c->hit_disk, c->miss, c->ms_translate, c->ms_load, c->bad, c->stored);
+}
+
 static nir_shader *
 translate(op2mtl_device *dev, void *mem, const struct op2mtl_function *f, gl_shader_stage want,
           struct air_shader_info *info)
@@ -661,9 +1003,41 @@ translate(op2mtl_device *dev, void *mem, const struct op2mtl_function *f, gl_sha
    struct air_to_nir_options opts = { .constants = fc, .num_constants = num_fc };
    const char *err = NULL;
    unsigned s = want == MESA_SHADER_VERTEX ? 0 : 1;
-   nir_shader *nir = air_to_nir(mem, fn->bitcode, fn->bitcode_size, NULL, &opts, dev->nir_opts[s], info, &err);
-   if (!nir)
-      return fail("pipeline: %s: %s", f->name, err ? err : "translation failed");
+   struct tcache *c = &dev->tcache;
+   unsigned char key[20];
+   nir_shader *nir = NULL;
+   if (!c->off) {
+      tcache_key(c, fn, want, fc, num_fc, key);
+      bool from_disk;
+      double t0 = now_ms();
+      struct tcache_entry *e = tcache_lookup(c, key, &from_disk);
+      if (e && (nir = tcache_read(mem, e->data, e->size, dev->nir_opts[s], info))) {
+         c->ms_load += now_ms() - t0;
+         from_disk ? c->hit_disk++ : c->hit_mem++;
+         tcache_report(c);
+      } else if (e) {
+         c->bad++;   /* an entry that will not read: translate, and the store below replaces it */
+         say("cache: %s: an entry that does not read, translating", f->name);
+      }
+   }
+   if (!nir) {
+      double t0 = now_ms();
+      nir = air_to_nir(mem, fn->bitcode, fn->bitcode_size, NULL, &opts, dev->nir_opts[s], info, &err);
+      if (!nir)
+         return fail("pipeline: %s: %s", f->name, err ? err : "translation failed");
+      if (!c->off) {
+         double ms = now_ms() - t0;
+         c->ms_translate += ms;
+         c->miss++;
+         if (info->stage == want) {
+            struct tcache_entry *old = tcache_find(c, key);
+            if (old)
+               memset(old->key, 0, 20);   /* the bad one: never found again */
+            tcache_store(c, key, nir, info, dev->nir_opts[s]);
+         }
+         tcache_report(c);
+      }
+   }
    if (info->stage != want)
       return fail("pipeline: %s is a %s function, wanted %s", f->name, gl_shader_stage_name(info->stage),
                   gl_shader_stage_name(want));

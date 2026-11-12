@@ -22,6 +22,10 @@
 #include <pthread.h>
 #include <errno.h>
 #include <IOSurface/IOSurfaceRef.h>
+#include <execinfo.h>
+#include <signal.h>
+#include <mach-o/dyld.h>
+#include <mach-o/getsect.h>
 #include "op2_metallib.h"
 #include "op2mtl.h"   /* userland/op2mtl: the GPU driver core this shim maps Metal onto (G5b) */
 
@@ -2529,6 +2533,54 @@ gpuCommit(void)
 	pthread_mutex_unlock(&gPassLock);
 }
 
+/*
+ * newTextureLayoutWithDescriptor:isHeapOrBufferBacked: (rounds fable-30/31: SpringBoard calls it, our forwarder answered
+ * nil, and SpringBoard crashed on a NULL right after preparing a full-screen wallpaper surface). A layout object that
+ * answers what Apple's would: the bytes the texture takes, its alignment and row pitch. Anything else it is asked goes
+ * to the forwarder (zero, and an `unimpl -[OP2MetalTextureLayout ...]` line), so a missing answer shows by name.
+ */
+static Class gLayoutClass;
+struct op2_layout { NSUInteger size, align, bpr; };
+
+static void layoutFree(void *s) { free(s); }
+static void layoutDealloc(__unsafe_unretained id self, SEL _cmd) { deallocWith(self, _cmd, gLayoutClass, layoutFree); }
+static struct op2_layout *layoutOf(id self) { void **slot = stateOf(self); return slot ? (struct op2_layout *)*slot : NULL; }
+static NSUInteger layoutSize(id self, __unused SEL _cmd) { struct op2_layout *l = layoutOf(self); return l ? l->size : 0; }
+static NSUInteger layoutAlign(id self, __unused SEL _cmd) { struct op2_layout *l = layoutOf(self); return l ? l->align : 16384; }
+static NSUInteger layoutBpr(id self, __unused SEL _cmd) { struct op2_layout *l = layoutOf(self); return l ? l->bpr : 0; }
+
+OP2_RETURNS_RETAINED static id
+deviceNewTextureLayout(__unused id self, __unused SEL _cmd, MTLTextureDescriptor *d, __unused BOOL heapOrBuffer)
+{
+	if (!gLayoutClass || !d)
+		return nil;
+	id o = [[gLayoutClass alloc] init];
+	struct op2_layout *l = calloc(1, sizeof *l);
+	void **slot = stateOf(o);
+	if (!l || !slot) {
+		free(l);
+		return o;
+	}
+	unsigned bw, bh, bb;
+	formatBlock(d.pixelFormat, &bw, &bh, &bb);
+	NSUInteger w = d.width ? d.width : 1, h = d.height ? d.height : 1, levels = d.mipmapLevelCount ? d.mipmapLevelCount : 1;
+	NSUInteger layers = (d.arrayLength ? d.arrayLength : 1) * (d.textureType == MTLTextureTypeCube ? 6 : 1) *
+	                    (d.depth ? d.depth : 1);
+	l->bpr = (((w + bw - 1) / bw) * bb + 63) & ~(NSUInteger)63;
+	NSUInteger total = 0;
+	for (NSUInteger m = 0; m < levels; m++) {
+		NSUInteger mw = MAX(w >> m, 1), mh = MAX(h >> m, 1);
+		NSUInteger rb = (((mw + bw - 1) / bw) * bb + 63) & ~(NSUInteger)63;
+		total += rb * ((mh + bh - 1) / bh);
+	}
+	l->align = 16384;
+	l->size = ((total * layers) + 16383) & ~(NSUInteger)16383;
+	*slot = l;
+	op2_log(@"G texture layout %lux%lu fmt %lu: %lu bytes, row %lu", (unsigned long)w, (unsigned long)h,
+	        (unsigned long)d.pixelFormat, (unsigned long)l->size, (unsigned long)l->bpr);
+	return o;
+}
+
 /* ---- Device Property Providers ---- */
 static id
 deviceName(__unused id self, __unused SEL _cmd)
@@ -2842,12 +2894,190 @@ shownToThisProcess(void)
 	return NO;
 }
 
+/*
+ * CRASH REPORTS (round fable-33: SpringBoard abort()ed twice with HomeButtonType 2 and nothing on the phone says why:
+ * ReportCrash writes no .ips here). In every process OP2Metal is shown to: an uncaught exception's name, reason and
+ * stack, and on SIGABRT/SIGSEGV/SIGBUS/SIGILL the stack plus every image's crash annotation (__DATA,__crash_info:
+ * CRSetCrashLogMessage, where _os_crash, BSAssert and libdispatch put their message), each as "C ..." lines in the
+ * kernel log. Frames are image+offset (dladdr's nearest export alongside); the shared cache is symbolized offline.
+ */
+static void
+crashLine(const char *fmt, ...)
+{
+	char line[128];
+	int k = snprintf(line, sizeof line, "C %s: ", getprogname());
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(line + k, sizeof line - (size_t)k, fmt, ap);
+	va_end(ap);
+	kernelLog(line);
+}
+
+static void
+crashText(const char *tag, const char *text)
+{
+	if (!text)
+		return;
+	size_t n = strlen(text);
+	for (size_t off = 0; off < n && off < 1600; off += 90)
+		crashLine("%s %.90s", tag, text + off);
+}
+
+static void
+crashFrames(void *const *pcs, int n)
+{
+	for (int i = 0; i < n; i++) {
+		Dl_info d = {0};
+		if (dladdr(pcs[i], &d) && d.dli_fname) {
+			const char *img = strrchr(d.dli_fname, '/');
+			crashLine("#%d %s+0x%lx %s", i, img ? img + 1 : d.dli_fname,
+			          (unsigned long)((uintptr_t)pcs[i] - (uintptr_t)d.dli_fbase), d.dli_sname ? d.dli_sname : "");
+		} else {
+			crashLine("#%d %p", i, pcs[i]);
+		}
+	}
+}
+
+struct op2_crash_info { uint64_t version, message, signature, backtrace, message2; };
+
+static void
+crashAnnotations(void)
+{
+	for (uint32_t i = 0; i < _dyld_image_count(); i++) {
+		unsigned long size = 0;
+		const struct mach_header_64 *mh = (const struct mach_header_64 *)_dyld_get_image_header(i);
+		struct op2_crash_info *ci = mh ? (struct op2_crash_info *)getsectiondata(mh, "__DATA", "__crash_info", &size) : NULL;
+		if (!ci || size < sizeof *ci)
+			continue;
+		if (!ci->message && !ci->message2 && !ci->signature)
+			continue;
+		const char *img = strrchr(_dyld_get_image_name(i), '/');
+		crashLine("annotation in %s", img ? img + 1 : _dyld_get_image_name(i));
+		crashText("msg", (const char *)(uintptr_t)ci->message);
+		crashText("msg2", (const char *)(uintptr_t)ci->message2);
+		crashText("sig", (const char *)(uintptr_t)ci->signature);
+	}
+}
+
+static NSUncaughtExceptionHandler *gPrevExceptionHandler;
+static volatile int gCrashing;
+
+static void
+crashException(NSException *e)
+{
+	gCrashing = 1;
+	crashLine("uncaught %s", [[e name] UTF8String]);
+	crashText("reason", [[e reason] UTF8String]);
+	NSArray *rets = [e callStackReturnAddresses];
+	void *pcs[48];
+	int n = 0;
+	for (NSNumber *a in rets) {
+		if (n >= 48)
+			break;
+		pcs[n++] = (void *)(uintptr_t)[a unsignedLongLongValue];
+	}
+	crashFrames(pcs, n);
+	if (gPrevExceptionHandler)
+		gPrevExceptionHandler(e);
+}
+
+static void
+crashSignal(int sig, __unused siginfo_t *info, __unused void *uc)
+{
+	if (!gCrashing++) {
+		crashLine("signal %d (%s)", sig, strsignal(sig));
+		crashAnnotations();
+		void *pcs[48];
+		crashFrames(pcs, backtrace(pcs, 48));
+	}
+	signal(sig, SIG_DFL);   /* and die the way we were going to */
+	raise(sig);
+}
+
+static void
+installCrashReports(void)
+{
+	gPrevExceptionHandler = NSGetUncaughtExceptionHandler();
+	NSSetUncaughtExceptionHandler(crashException);
+	struct sigaction sa = { .sa_sigaction = crashSignal, .sa_flags = SA_SIGINFO | SA_ONSTACK };
+	sigemptyset(&sa.sa_mask);
+	int sigs[] = { SIGABRT, SIGSEGV, SIGBUS, SIGILL, SIGTRAP };
+	for (unsigned i = 0; i < sizeof sigs / sizeof sigs[0]; i++)
+		sigaction(sigs[i], &sa, NULL);
+}
+
+/*
+ * HomeButtonType 2 on an iPhone 6 Plus (round fable-34): Control Center's status bar asks UIKit's status-bar visual
+ * provider for the regions of a part only the iPhone X layout has (-regionIdentifiersForPartWithIdentifier:, nil on
+ * the 6 Plus provider), and UIKitCore hands that nil to -[NSSet setByAddingObjectsFromSet:], which raises:
+ * SpringBoard died on every Control Center swipe. In SpringBoard, a nil or non-set argument now adds nothing (an
+ * array or ordered set adds its objects).
+ */
+static IMP gSetByAddingSet;
+
+static id
+safeSetByAddingObjectsFromSet(id self, SEL _cmd, id other)
+{
+	if (other && ![other isKindOfClass:[NSSet class]]) {
+		static int said;
+		if (!said++)
+			op2_log(@"NSSet setByAddingObjectsFromSet: given a %s, not a set: taken as its objects",
+			        object_getClassName(other));
+		if ([other isKindOfClass:[NSArray class]])
+			other = [NSSet setWithArray:other];
+		else if ([other isKindOfClass:[NSOrderedSet class]])
+			other = [other set];
+		else
+			other = nil;
+	}
+	if (!other)
+		return [self copy];   /* ARC: returned autoreleased, as the method would */
+	return ((id (*)(id, SEL, id))gSetByAddingSet)(self, _cmd, other);
+}
+
+static void
+installHomeGestureFixes(void)
+{
+	if (strcmp(getprogname(), "SpringBoard"))
+		return;
+	SEL sel = @selector(setByAddingObjectsFromSet:);
+	const char *classes[] = { "NSSet", "__NSSetI", "__NSSetM", "__NSSingleObjectSetI", "__NSFrozenSetM",
+	                          "__NSCFSet", "NSMutableSet" };
+	for (unsigned i = 0; i < sizeof classes / sizeof classes[0]; i++) {
+		Class c = objc_getClass(classes[i]);
+		if (!c)
+			continue;
+		/* only where the class implements it itself (not inherited): one original IMP is enough for NSSet's tree */
+		unsigned n = 0;
+		Method *ms = class_copyMethodList(c, &n);
+		for (unsigned j = 0; j < n; j++) {
+			if (method_getName(ms[j]) != sel)
+				continue;
+			IMP old = method_getImplementation(ms[j]);
+			if (old == (IMP)safeSetByAddingObjectsFromSet)
+				break;
+			if (!gSetByAddingSet)
+				gSetByAddingSet = old;
+			if (old == gSetByAddingSet) {
+				method_setImplementation(ms[j], (IMP)safeSetByAddingObjectsFromSet);
+				op2_log(@"home gesture fix: -[%s setByAddingObjectsFromSet:] guarded", classes[i]);
+			} else {
+				op2_log(@"home gesture fix: -[%s setByAddingObjectsFromSet:] has its own IMP, left alone", classes[i]);
+			}
+			break;
+		}
+		free(ms);
+	}
+}
+
 __attribute__((constructor)) static void
 registerOP2Metal(void)
 {
 	if (!shownToThisProcess()) {
 		return;
 	}
+	installCrashReports();
+	installHomeGestureFixes();
 
 	gBaseDevice = objc_getClass("MTLIOAccelDevice");
 	if (gBaseDevice == Nil) {
@@ -3116,6 +3346,26 @@ registerOP2Metal(void)
 		class_addMethod(device, sel_registerName("newSamplerStateWithDescriptor:"), (IMP)deviceNewSampler, "@@:@");
 	}
 	installFCHooks();
+	gLayoutClass = makeCustomClass("OP2MetalTextureLayout", "NSObject", NULL, (IMP)layoutDealloc);
+	if (gLayoutClass) {
+		const char *sizes[] = { "size", "allocatedSize", "sizeInBytes", "totalSize", "byteSize" };
+		for (unsigned i = 0; i < sizeof sizes / sizeof sizes[0]; i++)
+			class_addMethod(gLayoutClass, sel_registerName(sizes[i]), (IMP)layoutSize, "Q@:");
+		class_addMethod(gLayoutClass, sel_registerName("alignment"), (IMP)layoutAlign, "Q@:");
+		class_addMethod(gLayoutClass, sel_registerName("bytesPerRow"), (IMP)layoutBpr, "Q@:");
+		class_addMethod(gLayoutClass, sel_registerName("rowBytes"), (IMP)layoutBpr, "Q@:");
+		objc_registerClassPair(gLayoutClass);
+		/*
+		 * OFF (round fable-32): answering made SpringBoard build its 648x648 ASTC dock material through the layout
+		 * (watermark, copyFromLinearBytes:...toTextureMemory:..., finalizeTextureMemory:, none of them here) and the
+		 * dock came out black; nil sends it down the plain-texture path that worked. The Wallpaper crash it was meant
+		 * to fix was IOSurfaceCopyAllValues answering NULL (kernel OP2Surface sel 9/10). Boot-arg-free switch: the
+		 * environment, OP2METAL_TEXLAYOUT=1.
+		 */
+		if (getenv("OP2METAL_TEXLAYOUT"))
+			class_addMethod(device, sel_registerName("newTextureLayoutWithDescriptor:isHeapOrBufferBacked:"),
+			                (IMP)deviceNewTextureLayout, "@@:@B");
+	}
 
 	/* Descriptor Stubs */
 	for (unsigned i = 0; i < STUB_COUNT; i++) {
