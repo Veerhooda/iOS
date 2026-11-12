@@ -343,3 +343,17 @@ fragment function 0, 1, 2, 3, 5 and samplers 0..5. Geometry is verified; the COL
 constants are a byte pattern; the inside varies by quadrant): CA's real buffer contents come with the shim.
 Next: the OP2Metal shim (dlopen op2mtl.dylib; MTLBuffer/MTLTexture/IOSurface texture/pipeline/encoder selectors of
 the G5a trace onto the API; log CA's pipeline descriptors and bindings), then metal=2 boots.
+
+## G5b (2026-11-12): the OP2Metal shim on op2mtl; CoreAnimation composites on the Adreno
+OP2Metal maps CA's Metal calls onto op2mtl (buffers, IOSurface / bytes-no-copy / ASTC textures, samplers, function
+constants via hooked MTLFunctionConstantValues setters, pipelines, render passes, synchronous commit + wait). Levels:
+`metal=2` = only backboardd gets the Metal device (SpringBoard and apps draw with the CPU); `metal=3` = every process.
+Fourteen rounds, logs `logs/g5b-round*.out` and the daily logs of the same times; every fix and its peer reference is
+in `docs/PEER-FINDINGS.md`. Kernel snapshots `kernel-backup/round6-gpu/g5b-*` (g5b-13 = state of commit 758c0a6).
+Measured: backboardd ~120-280 pipelines at ~0.7 s each, ~7 ms GPU per commit, 0 failed draws, no SMMU faults.
+Phone (user's eyes): `metal=3` composites the home screen with right icons/colours but pages don't snap and no app
+launches; `metal=2` launches Settings (rendered mostly right, a yellow wash and cyan bands remain), shows the iOS 12
+wallpaper, but SpringBoard's own layers are missing / text in black boxes; blur materials fail.
+After 758c0a6: op2mtl widens 16-bit varyings to 32 bits (CA's colours are half4; both peers needed this;
+`OP2MTL_F16VARY=1` = old behaviour) and lowers [[point_coord]] to a PNTC input + per-vertex point size (blur shaders).
+Review handover: `docs/FABLE-HANDOVER-PROMPT.md`.

@@ -18,6 +18,7 @@
 #include <mach/mach.h>
 #include <mach/mach_time.h>
 #include <pthread.h>
+#include <errno.h>
 #include <IOSurface/IOSurfaceRef.h>
 #include "op2_metallib.h"
 #include "op2mtl.h"   /* userland/op2mtl: the GPU driver core this shim maps Metal onto (G5b) */
@@ -196,6 +197,12 @@ mtlOpen(void)
 	}
 	gMtl = d;
 	op2_trace("G GPU rendering through op2mtl (%.60s)", M.device_name(d));
+	if (!strcmp(getprogname(), "backboardd"))   /* the last boot's frame captures are not this boot's */
+		for (unsigned n = 0; n < 8; n++) {
+			char path[64];
+			snprintf(path, sizeof path, "/private/var/tmp/op2cap-%u.bgra", n);
+			unlink(path);
+		}
 	/* where the code is in this process, so a crash's pc can be found in the unstripped builds (atos -l) */
 	Dl_info a, b;
 	if (dladdr((const void *)M.version, &a) && dladdr((const void *)&mtlOpen, &b))
@@ -957,12 +964,44 @@ struct op2_texture {
 };
 static volatile uint64_t gFrameGen = 1;   /* bumped by every GPU commit */
 
+/*
+ * Frame capture (docs/FABLE-REVIEW.md C2, the userland half): what the GPU drew, without a camera. The last
+ * IOSurface-backed colour target a render pass used is the screen; after a commit, at most once every 40 s and only
+ * if something was drawn since, it is read back and written at half size to /private/var/tmp/op2cap-<n>.bgra
+ * (n = 0..7, round robin; a 16-byte header "OP2C", width, height, commit number, then BGRA rows).
+ * tools/op2cap-pull.sh reads them from TWRP and makes PNGs.
+ */
+static pthread_mutex_t gCapLock = PTHREAD_MUTEX_INITIALIZER;
+static op2mtl_texture *gCapTex;
+static unsigned gCapW, gCapH, gCapN, gCapCommit;
+static uint64_t gCapLast;
+
+static void
+captureForget(op2mtl_texture *t)
+{
+	pthread_mutex_lock(&gCapLock);
+	if (gCapTex == t)
+		gCapTex = NULL;
+	pthread_mutex_unlock(&gCapLock);
+}
+
+static void
+captureNote(op2mtl_texture *t, unsigned w, unsigned h)
+{
+	pthread_mutex_lock(&gCapLock);
+	gCapTex = t;
+	gCapW = w;
+	gCapH = h;
+	pthread_mutex_unlock(&gCapLock);
+}
+
 static void
 textureFree(void *state)
 {
 	struct op2_texture *t = (struct op2_texture *)state;
 	if (t) {
 		if (t->gpu) {
+			captureForget(t->gpu);
 			M.texture_free(t->gpu);
 		}
 		if (t->iosurface) {
@@ -1052,9 +1091,13 @@ textureStorageMode(id self, __unused SEL _cmd)
 static size_t
 bytesPerPixel(NSUInteger fmt)
 {
-	switch (fmt) {
-	case 10: case 11: case 13: return 1;          /* R8 */
-	case 30: case 31: case 20: case 25: return 2; /* RG8, R16 */
+	switch (fmt) {   /* MTLPixelFormat (FABLE-REVIEW A7: A8 and the wide formats used to be counted as 4) */
+	case 1: case 10: case 11: case 12: case 13: case 14: return 1;   /* A8, R8 */
+	case 20: case 22: case 23: case 24: case 25:                     /* R16 */
+	case 30: case 31: case 32: case 33: case 34:                     /* RG8 */
+	case 40: case 41: case 42: case 43: return 2;                    /* packed 16-bit */
+	case 103: case 104: case 105: case 110: case 112: case 113: case 114: case 115: return 8;   /* RG32, RGBA16 */
+	case 123: case 124: case 125: return 16;                         /* RGBA32 */
 	default: return 4;
 	}
 }
@@ -1085,6 +1128,19 @@ textureReplace(id self, __unused SEL _cmd, MTLRegion r, NSUInteger level, const 
 	if (!t || !bytes || !r.size.width || !r.size.height)
 		return;
 	if (t->gpu) {
+		/* round fable-20: status-bar layers drew as opaque black boxes: what alpha does CA hand us? The corner and
+		 * centre pixel of the first uploads of 4-byte textures */
+		static unsigned sTraced;
+		if (sTraced < 24 && bytesPerPixel(t->pixelFormat) == 4 && level == 0 && r.size.width >= 8 &&
+		    r.size.height >= 8) {
+			sTraced++;
+			const uint8_t *c0 = (const uint8_t *)bytes;
+			const uint8_t *cm = (const uint8_t *)bytes + (r.size.height / 2) * bpr + (r.size.width / 2) * 4;
+			op2_trace("R %lux%lu fmt %lu bpr %lu tex %lux%lu: corner %02x%02x%02x%02x centre %02x%02x%02x%02x",
+			          (unsigned long)r.size.width, (unsigned long)r.size.height, (unsigned long)t->pixelFormat,
+			          (unsigned long)bpr, (unsigned long)t->width, (unsigned long)t->height, c0[0], c0[1], c0[2],
+			          c0[3], cm[0], cm[1], cm[2], cm[3]);
+		}
 		if (!M.texture_replace(t->gpu, (uint32_t)level, (uint32_t)r.origin.x, (uint32_t)r.origin.y,
 		                       (uint32_t)r.size.width, (uint32_t)r.size.height, bytes, bpr))
 			op2_log(@"G replaceRegion: %s", M.last_error());
@@ -1963,6 +2019,12 @@ struct op2_encoder {
 	NSUInteger off[2][OP2MTL_MAX_BUFFERS];
 };
 
+/* one whole frame logged, draw by draw (round fable-22: icons and dock missing under metal=2): the first commit
+ * that starts 60 s after the first GPU commit; at most 160 draws */
+static volatile int gFrameTrace;   /* 0 not yet, 1 tracing this commit, 2 done */
+static unsigned gFrameTraceN;
+static __unsafe_unretained id gTraceTex[2][4];
+
 /* per process, under gPassLock */
 static struct {
 	unsigned commits, draws, failed, skipped, reports, traced;
@@ -2033,6 +2095,8 @@ commandBufferRenderEncoder(id self, __unused SEL _cmd, MTLRenderPassDescriptor *
 		MTLClearColor cc = a.clearColor;
 		att[i] = (struct op2mtl_pass_attachment){ .texture = t->gpu, .load_action = (uint32_t)a.loadAction,
 		                                          .clear = { cc.red, cc.green, cc.blue, cc.alpha } };
+		if (i == 0 && t->iosurface && t->width >= 640)
+			captureNote(t->gpu, (unsigned)t->width, (unsigned)t->height);
 		any = YES;
 	}
 	if (!any)
@@ -2046,6 +2110,12 @@ commandBufferRenderEncoder(id self, __unused SEL _cmd, MTLRenderPassDescriptor *
 		return enc;
 	}
 	M.set_pipeline(gMtl, NULL);   /* nothing carries over from another pass */
+	if (gFrameTrace == 1 && gFrameTraceN < 160) {
+		struct op2_texture *t0 = rpd.colorAttachments[0].texture ? textureOf(rpd.colorAttachments[0].texture) : NULL;
+		op2_trace("F pass -> %lux%lu fmt %lu load %lu%s", t0 ? (unsigned long)t0->width : 0UL,
+		          t0 ? (unsigned long)t0->height : 0UL, t0 ? (unsigned long)t0->pixelFormat : 0UL,
+		          (unsigned long)rpd.colorAttachments[0].loadAction, t0 && t0->iosurface ? " iosurface" : "");
+	}
 	e->gpu = YES;
 	void **cslot = stateOf(self);
 	struct op2_cmd_buf *cb = cslot ? (struct op2_cmd_buf *)*cslot : NULL;
@@ -2188,14 +2258,19 @@ encSetTexture(id self, unsigned st, id texture, NSUInteger index)
 	if (!encOf(self))
 		return;
 	struct op2_texture *t = texture ? textureOf(texture) : NULL;
+	if (st < 2 && index < 4)
+		gTraceTex[st][index] = texture;
 	if (t && t->src && t->srcUploaded != gFrameGen)
 		textureUploadSource(t);
 	/* which textures draws sample (each distinct binding once): round g5b-11 has the ASTC wallpaper on the GPU
 	 * but not on the screen */
-	if (t)
-		op2_trace("X %c%lu %lux%lu fmt %lu %s%s", st ? 'f' : 'v', (unsigned long)index, (unsigned long)t->width,
+	if (t) {
+		struct op2_encoder *ee = encOf(self);
+		struct op2_pipeline *pp = ee ? pipelineOf(ee->pipeline) : NULL;
+		op2_trace("X %c%lu %lux%lu fmt %lu %s%s P%u", st ? 'f' : 'v', (unsigned long)index, (unsigned long)t->width,
 		          (unsigned long)t->height, (unsigned long)t->pixelFormat, t->gpu ? "gpu" : "cpu",
-		          t->src ? " bytes" : t->iosurface ? " iosurface" : "");
+		          t->src ? " bytes" : t->iosurface ? " iosurface" : "", pp ? pp->serial : 0);
+	}
 	if (t && !t->gpu)
 		op2_log(@"G %s texture %lu (fmt %lu) is not on the GPU: unbound", st ? "fragment" : "vertex",
 		        (unsigned long)index, (unsigned long)t->pixelFormat);
@@ -2255,6 +2330,26 @@ traceDraw(struct op2_encoder *e, const char *what)
 }
 
 static void
+frameTraceDraw(struct op2_encoder *e, const char *kind, NSUInteger count)
+{
+	if (gFrameTrace != 1 || gFrameTraceN >= 160)
+		return;
+	gFrameTraceN++;
+	struct op2_pipeline *p = pipelineOf(e->pipeline);
+	char tx[80] = "";
+	size_t k = 0;
+	for (unsigned i = 0; i < 4; i++) {
+		struct op2_texture *t = gTraceTex[1][i] ? textureOf(gTraceTex[1][i]) : NULL;
+		if (t && k + 1 < sizeof tx)
+			k += (size_t)snprintf(tx + k, sizeof tx - k, " t%u=%lux%lu/%lu%s", i, (unsigned long)t->width,
+			                      (unsigned long)t->height, (unsigned long)t->pixelFormat,
+			                      t->gpu ? "" : "!cpu");
+	}
+	op2_trace("F%u %s P%u%s n%lu%s", gFrameTraceN, kind, p ? p->serial : 0, e->drawable ? "" : " SKIP",
+	          (unsigned long)count, tx);
+}
+
+static void
 drawDone(BOOL ok)
 {
 	gStat.draws++;
@@ -2271,6 +2366,7 @@ encDrawIndexed(id self, __unused SEL _cmd, NSUInteger prim, NSUInteger count, NS
 	struct op2_encoder *e = encOf(self);
 	if (!e)
 		return;
+	frameTraceDraw(e, "idx", count);
 	if (!e->drawable) {
 		gStat.skipped++;
 		return;
@@ -2298,6 +2394,7 @@ encDraw(id self, __unused SEL _cmd, NSUInteger prim, NSUInteger start, NSUIntege
 	struct op2_encoder *e = encOf(self);
 	if (!e)
 		return;
+	frameTraceDraw(e, "arr", count);
 	if (!e->drawable) {
 		gStat.skipped++;
 		return;
@@ -2310,6 +2407,51 @@ static void
 encDraw1(id self, SEL _cmd, NSUInteger prim, NSUInteger start, NSUInteger count)
 {
 	encDraw(self, _cmd, prim, start, count, 1);
+}
+
+/* after a commit, under gPassLock: see the frame capture comment */
+static void
+captureMaybe(unsigned commit)
+{
+	static double sinceBoot;
+	(void)sinceBoot;
+	if (gCapLast && msSince(gCapLast) < 40000)
+		return;
+	pthread_mutex_lock(&gCapLock);
+	op2mtl_texture *t = gCapTex;
+	unsigned w = gCapW, h = gCapH;
+	if (t && commit != gCapCommit) {
+		uint32_t *full = malloc((size_t)w * h * 4);
+		unsigned hw = w / 2, hh = h / 2;
+		uint32_t *half = malloc((size_t)hw * hh * 4);
+		if (full && half && M.texture_read(t, 0, 0, 0, w, h, full, (size_t)w * 4)) {
+			for (unsigned y = 0; y < hh; y++)
+				for (unsigned x = 0; x < hw; x++)
+					half[y * hw + x] = full[(y * 2) * w + x * 2];
+			char path[64];
+			unsigned n = gCapN++ % 8;
+			snprintf(path, sizeof path, "/private/var/tmp/op2cap-%u.bgra", n);
+			FILE *f = fopen(path, "wb");
+			if (f) {
+				uint32_t hdr[4] = { 0x4332504f /* "OP2C" */, hw, hh, commit };
+				fwrite(hdr, 1, sizeof hdr, f);
+				fwrite(half, 4, (size_t)hw * hh, f);
+				fflush(f);
+				fsync(fileno(f));
+				fclose(f);
+				op2_trace("C capture %u: commit %u, %ux%u -> %s", n, commit, hw, hh, path);
+			} else {
+				op2_trace("C capture: cannot write %s (errno %d)", path, errno);
+			}
+		} else {
+			op2_trace("C capture: read-back failed (%s)", full && half ? M.last_error() : "no memory");
+		}
+		free(full);
+		free(half);
+		gCapCommit = commit;
+		gCapLast = mach_absolute_time();
+	}
+	pthread_mutex_unlock(&gCapLock);
 }
 
 /*
@@ -2344,6 +2486,19 @@ gpuCommit(void)
 		kernelLog(line);
 		gStat.maxMs = 0;
 	}
+	/* from 45 s after the first GPU commit: earlier frames are the white boot screen (rounds fable-16..18), and an
+	 * idle lock screen commits about once a minute, so a commit count never got there (round fable-19) */
+	static uint64_t sFirstCommitAt;
+	if (!sFirstCommitAt)
+		sFirstCommitAt = mach_absolute_time();
+	if (gFrameTrace == 1) {
+		gFrameTrace = 2;
+		op2_trace("F end: %u draws in commit %u, %u skipped so far", gFrameTraceN, gStat.commits, gStat.skipped);
+	} else if (gFrameTrace == 0 && msSince(sFirstCommitAt) > 60000) {
+		gFrameTrace = 1;   /* the NEXT command buffer's draws are logged */
+	}
+	if (done && msSince(sFirstCommitAt) > 45000)
+		captureMaybe(gStat.commits);
 	pthread_mutex_unlock(&gPassLock);
 }
 
@@ -2575,7 +2730,21 @@ shownToThisProcess(void)
 	if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) == 0) {
 		const char *at = strstr(args, "metal=");
 		if (at != NULL) {
-			level = atoi(at + 6);
+			/*
+			 * The cmdline has no room for more arguments, so metal= carries the A/B switches too: the level is the
+			 * last digit, the digits before it are flags for op2mtl (the kernel only tests metal >= 2):
+			 *   metal=2   compositor on the GPU          metal=12  the same without framebuffer fetch
+			 *   metal=22  16-bit varyings left 16-bit    metal=32  both
+			 *   metal=42  framebuffer fetch through a shadow copy (the fable-16/17 way) instead of in place
+			 */
+			int v = atoi(at + 6);
+			level = v % 10;
+			if ((v / 10) & 1)
+				setenv("OP2MTL_NOFBFETCH", "1", 1);
+			if ((v / 10) & 2)
+				setenv("OP2MTL_F16VARY", "1", 1);
+			if ((v / 10) & 4)   /* metal=42: framebuffer fetch through a shadow copy instead of in place */
+				setenv("OP2MTL_FBCOPY", "1", 1);
 		}
 	}
 

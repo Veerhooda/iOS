@@ -29,6 +29,7 @@
 #include "util/format/u_format.h"
 #include "util/half_float.h"
 #include "util/u_inlines.h"
+#include "freedreno/ir3/ir3_gallium.h"   /* ir3_get_shader: what ir3 made of a fragment function (fb_read) */
 #include "util/u_sampler.h"
 #include "util/u_memory.h"
 #include "util/ralloc.h"
@@ -153,7 +154,30 @@ vertex_format(uint32_t f)
    case 42: return PIPE_FORMAT_B8G8R8A8_UNORM;   /* UChar4Normalized_BGRA */
    case 45: return PIPE_FORMAT_R8_UINT;
    case 47: return PIPE_FORMAT_R8_UNORM;
-   case 51: return PIPE_FORMAT_R16_FLOAT;
+   /* 51 is UShortNormalized and Half is 53 (iOS 12.4 SDK; 51 used to be mapped to a half: FABLE-REVIEW A7) */
+   case 4:  return PIPE_FORMAT_R8G8_SINT;
+   case 5:  return PIPE_FORMAT_R8G8B8_SINT;
+   case 6:  return PIPE_FORMAT_R8G8B8A8_SINT;
+   case 10: return PIPE_FORMAT_R8G8_SNORM;
+   case 11: return PIPE_FORMAT_R8G8B8_SNORM;
+   case 12: return PIPE_FORMAT_R8G8B8A8_SNORM;
+   case 16: return PIPE_FORMAT_R16G16_SINT;
+   case 17: return PIPE_FORMAT_R16G16B16_SINT;
+   case 18: return PIPE_FORMAT_R16G16B16A16_SINT;
+   case 22: return PIPE_FORMAT_R16G16_SNORM;
+   case 23: return PIPE_FORMAT_R16G16B16_SNORM;
+   case 24: return PIPE_FORMAT_R16G16B16A16_SNORM;
+   case 32: return PIPE_FORMAT_R32_SINT;
+   case 33: return PIPE_FORMAT_R32G32_SINT;
+   case 34: return PIPE_FORMAT_R32G32B32_SINT;
+   case 35: return PIPE_FORMAT_R32G32B32A32_SINT;
+   case 46: return PIPE_FORMAT_R8_SINT;
+   case 48: return PIPE_FORMAT_R8_SNORM;
+   case 49: return PIPE_FORMAT_R16_UINT;
+   case 50: return PIPE_FORMAT_R16_SINT;
+   case 51: return PIPE_FORMAT_R16_UNORM;
+   case 52: return PIPE_FORMAT_R16_SNORM;
+   case 53: return PIPE_FORMAT_R16_FLOAT;
    default: return PIPE_FORMAT_NONE;
    }
 }
@@ -259,6 +283,9 @@ struct op2mtl_pipeline {
    uint32_t samplers[STAGES];
    void *inline_sampler[STAGES][PIPE_MAX_SAMPLERS];
    unsigned num_color;
+   /* framebuffer fetch (fb_shadow_update): known at the first draw, when ir3 has compiled the fragment function */
+   bool fb_known, fb_read;
+   unsigned fb_first, fb_count;       /* the fetch's sampler slots: [fb_first, fb_count), after the function's own */
 };
 
 struct binding {
@@ -280,6 +307,14 @@ struct op2mtl_device {
    uint32_t zero_ubo_said[STAGES];    /* which indices have been reported */
    struct pipe_sampler_view *zero_view;   /* 1x1 transparent black: a texture slot the shader samples, unbound */
    uint32_t zero_view_said[STAGES];
+   /* framebuffer fetch: a copy of colour attachment 0 the fragment function reads as a texture */
+   struct pipe_resource *fb_shadow;
+   struct pipe_sampler_view *fb_shadow_view;
+   bool no_fbfetch;                   /* OP2MTL_NOFBFETCH: the A/B (the fetch slot stays unbound, as before) */
+   bool fb_copy;                      /* OP2MTL_FBCOPY: the shadow copy (round fable-16/17: GPU hangs) */
+   op2mtl_texture *att0;              /* this pass's colour attachment 0 (the fetch reads it in place) */
+   uint64_t fb_draws, fb_pixels;
+   uint32_t fb_said;
 
    bool in_pass;
    struct pipe_framebuffer_state fb;
@@ -316,6 +351,157 @@ finalize_for_gallium(nir_shader *nir)
             nir_lower_io_use_interpolated_input_intrinsics);
 }
 
+/*
+ * 16-bit varyings cross the vertex -> fragment boundary as 32 bits. CoreAnimation's uber shaders pass their colours
+ * as half4 (`generated(6color0Dv4_Dh)`), and ir3 mishandles half-precision VS outputs in the VS->FS link: both
+ * Chlorophyll (afb033a: "now matches CoreAnimation's CPU render") and ios-sweet-gpu (0006: diagonal garbage and
+ * saturated blocks gone) widen them. After nir_lower_io: a 16-bit store_output to a VARn slot stores f2f32/i2i32 of
+ * its value; a 16-bit fragment input load becomes a 32-bit load followed by f2f16/i2i16, so the rest of the shader
+ * is untouched. OP2MTL_F16VARY=1 in the environment keeps them 16-bit (the A/B).
+ */
+static bool
+widen_16bit_varyings(nir_shader *s)
+{
+   bool progress = false;
+   nir_foreach_function_impl(impl, s) {
+      nir_builder b = nir_builder_create(impl);
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr_safe(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            nir_intrinsic_instr *in = nir_instr_as_intrinsic(instr);
+            if (s->info.stage == MESA_SHADER_VERTEX && in->intrinsic == nir_intrinsic_store_output) {
+               if (nir_intrinsic_io_semantics(in).location < VARYING_SLOT_VAR0 || in->src[0].ssa->bit_size != 16)
+                  continue;
+               nir_alu_type base = nir_alu_type_get_base_type(nir_intrinsic_src_type(in));
+               b.cursor = nir_before_instr(instr);
+               nir_def *w = base == nir_type_float ? nir_f2f32(&b, in->src[0].ssa) :
+                            base == nir_type_int ? nir_i2i32(&b, in->src[0].ssa) : nir_u2u32(&b, in->src[0].ssa);
+               nir_src_rewrite(&in->src[0], w);
+               nir_intrinsic_set_src_type(in, (nir_alu_type)(base | 32));
+               progress = true;
+            } else if (s->info.stage == MESA_SHADER_FRAGMENT &&
+                       (in->intrinsic == nir_intrinsic_load_interpolated_input ||
+                        in->intrinsic == nir_intrinsic_load_input)) {
+               if (nir_intrinsic_io_semantics(in).location < VARYING_SLOT_VAR0 || in->def.bit_size != 16)
+                  continue;
+               nir_alu_type base = nir_alu_type_get_base_type(nir_intrinsic_dest_type(in));
+               in->def.bit_size = 32;
+               nir_intrinsic_set_dest_type(in, (nir_alu_type)(base | 32));
+               b.cursor = nir_after_instr(instr);
+               nir_def *n = base == nir_type_float ? nir_f2f16(&b, &in->def) :
+                            base == nir_type_int ? nir_i2i16(&b, &in->def) : nir_u2u16(&b, &in->def);
+               nir_def_rewrite_uses_after(&in->def, n, n->parent_instr);
+               progress = true;
+            }
+         }
+      }
+      nir_metadata_preserve(impl, nir_metadata_control_flow);
+   }
+   return progress;
+}
+
+/*
+ * [[point_coord]] as a fragment input at VARYING_SLOT_PNTC. The front end emits nir_load_point_coord, which ir3 has no
+ * instruction for ("Unhandled intrinsic type: load_point_coord": CoreAnimation's blur downsample shaders, round
+ * g5b-7); ir3 makes a PNTC input the hardware's point-sprite coordinate by itself (ir3_point_sprite). Before
+ * nir_lower_io.
+ */
+static bool
+lower_point_coord(nir_shader *s)
+{
+   if (s->info.stage != MESA_SHADER_FRAGMENT)
+      return false;
+   nir_variable *pntc = NULL;
+   bool progress = false;
+   nir_foreach_function_impl(impl, s) {
+      nir_builder b = nir_builder_create(impl);
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr_safe(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic ||
+                nir_instr_as_intrinsic(instr)->intrinsic != nir_intrinsic_load_point_coord)
+               continue;
+            nir_intrinsic_instr *in = nir_instr_as_intrinsic(instr);
+            if (!pntc) {
+               pntc = nir_variable_create(s, nir_var_shader_in, glsl_vec_type(2), "point_coord");
+               pntc->data.location = VARYING_SLOT_PNTC;
+               pntc->data.driver_location = s->num_inputs++;
+               pntc->data.interpolation = INTERP_MODE_SMOOTH;
+            }
+            b.cursor = nir_before_instr(instr);
+            nir_def *v = nir_load_var(&b, pntc);
+            if (in->def.bit_size == 16)
+               v = nir_f2f16(&b, v);
+            nir_def_replace(&in->def, v);
+            progress = true;
+         }
+      }
+      nir_metadata_preserve(impl, nir_metadata_control_flow);
+   }
+   if (progress)
+      s->info.inputs_read |= BITFIELD64_BIT(VARYING_SLOT_PNTC);
+   return progress;
+}
+
+/*
+ * Framebuffer fetch as an ordinary texel fetch (round fable-21). ir3 lowers a fetch to txf_ms_fb and emits OPC_ISAMM,
+ * the multisample texel fetch, with descriptors only the A6xx driver provides; on the A430 it read zeros, and CA's
+ * programmable-blend variants (hardware blend off, the shader reads the destination) composited every layer onto
+ * black: the black boxes round the status bar in the frame captures. Here, after nir_lower_io and before ir3 sees the
+ * shader, each read of colour attachment 0 (load_output with io_semantics.fb_fetch_output) becomes
+ * txf(texture `slot`, f2i32(frag_coord.xy), lod 0), which ir3 emits as a plain ISAML; bind_for_draw puts the target
+ * itself at `slot` after a texture barrier. Reads of other attachments (CA's masks) become zero. Returns whether the
+ * shader read the framebuffer at all.
+ */
+static bool
+lower_fb_fetch(nir_shader *s, unsigned slot)
+{
+   bool progress = false;
+   nir_foreach_function_impl(impl, s) {
+      nir_builder b = nir_builder_create(impl);
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr_safe(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            nir_intrinsic_instr *in = nir_instr_as_intrinsic(instr);
+            if (in->intrinsic != nir_intrinsic_load_output || !nir_intrinsic_io_semantics(in).fb_fetch_output)
+               continue;
+            b.cursor = nir_before_instr(instr);
+            nir_def *v;
+            if (nir_intrinsic_io_semantics(in).location == FRAG_RESULT_DATA0 && in->def.num_components <= 4) {
+               nir_def *xy = nir_f2i32(&b, nir_trim_vector(&b, nir_load_frag_coord(&b), 2));
+               nir_tex_instr *tex = nir_tex_instr_create(b.shader, 2);
+               tex->op = nir_texop_txf;
+               tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
+               tex->dest_type = nir_type_float32;
+               tex->coord_components = 2;
+               tex->texture_index = slot;
+               tex->sampler_index = slot;
+               tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_coord, xy);
+               tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_lod, nir_imm_int(&b, 0));
+               nir_def_init(&tex->instr, &tex->def, 4, 32);
+               nir_builder_instr_insert(&b, &tex->instr);
+               v = nir_trim_vector(&b, &tex->def, in->def.num_components);
+               if (in->def.bit_size == 16)
+                  v = nir_f2f16(&b, v);
+            } else {
+               v = nir_imm_zero(&b, in->def.num_components, in->def.bit_size);
+            }
+            nir_def_replace(&in->def, v);
+            progress = true;
+         }
+      }
+      nir_metadata_preserve(impl, nir_metadata_control_flow);
+   }
+   if (progress) {
+      s->info.fs.uses_fbfetch_output = false;
+      BITSET_SET(s->info.textures_used, slot);
+      BITSET_SET(s->info.textures_used_by_txf, slot);
+      s->info.num_textures = MAX2(s->info.num_textures, slot + 1);
+   }
+   return progress;
+}
+
 /* ir3's compile errors (tools/mesa-op2/ir3-context-error-returns.patch), in this library's log */
 extern void (*ir3_op2_error_hook)(const char *msg);
 static void
@@ -328,6 +514,7 @@ OP2MTL_API op2mtl_device *
 op2mtl_device_open(void)
 {
    ir3_op2_error_hook = ir3_error;
+   bool no_fbfetch = getenv("OP2MTL_NOFBFETCH") != NULL;
    /* GMEM is OCMEM on this SoC and the kernel allocates none: sysmem rendering only (G3) */
    setenv("FD_MESA_DEBUG", "sysmem", 0);
    glsl_type_singleton_init_or_ref();
@@ -347,6 +534,8 @@ op2mtl_device_open(void)
 
    op2mtl_device *dev = CALLOC_STRUCT(op2mtl_device);
    pthread_mutex_init(&dev->lock, NULL);
+   dev->no_fbfetch = no_fbfetch;
+   dev->fb_copy = getenv("OP2MTL_FBCOPY") != NULL;
    dev->screen = fd_drm_screen_create_renderonly(fd, NULL, &config);
    if (!dev->screen)
       return fail("device: the msm device opened but gave no screen");
@@ -366,6 +555,8 @@ op2mtl_device_open(void)
           * quad's two triangles), and its lines and points are one pixel: Gallium's 0 drew none, and CA draws
           * its mask coverage as lines (Chlorophyll 175571a: every mask empty) */
          .flatshade_first = 1, .line_width = 1.0f, .point_size = 1.0f,
+         /* a point's size is what the vertex function writes ([[point_size]]: CA's blur passes draw points) */
+         .point_size_per_vertex = 1,
       });
    dev->default_sampler = dev->pipe->create_sampler_state(dev->pipe, &(struct pipe_sampler_state){
       .wrap_s = PIPE_TEX_WRAP_CLAMP_TO_EDGE, .wrap_t = PIPE_TEX_WRAP_CLAMP_TO_EDGE,
@@ -595,8 +786,27 @@ op2mtl_pipeline_new(op2mtl_device *dev, const struct op2mtl_pipeline_desc *d)
    if (!vs || !fs)
       goto bad;
    link_varyings(fs, &vinfo, &finfo, d->vertex.name, d->fragment.name);
+   if (lower_point_coord(fs))
+      say("pipeline: %s reads [[point_coord]]: a PNTC input", d->fragment.name);
    finalize_for_gallium(vs);
    finalize_for_gallium(fs);
+   /* the fetch's slot: after every texture and image the function uses (what ir3 itself would have picked) */
+   unsigned fb_slot = BITSET_LAST_BIT(fs->info.textures_used) + fs->info.num_images;
+   if (fb_slot < MAX_TEX && lower_fb_fetch(fs, fb_slot)) {
+      p->fb_read = true;
+      p->fb_first = fb_slot;
+      p->fb_count = fb_slot + 1;
+   }
+   p->fb_known = true;
+   if (!getenv("OP2MTL_F16VARY")) {
+      bool wv = widen_16bit_varyings(vs), wf = widen_16bit_varyings(fs);
+      static bool said;
+      if ((wv || wf) && !said) {
+         said = true;
+         say("pipeline: %s + %s: 16-bit varyings widened to 32 bits (vs %d fs %d)", d->vertex.name,
+             d->fragment.name, wv, wf);
+      }
+   }
 
    /* the vertex descriptor -> vertex elements, one per stage-in attribute, in driver_location order */
    struct pipe_vertex_element ve[PIPE_MAX_ATTRIBS];
@@ -856,6 +1066,8 @@ op2mtl_texture_free(op2mtl_texture *t)
       for (unsigned i = 0; i < MAX_TEX; i++)
          if (dev->tex[s][i] == t)
             dev->tex[s][i] = NULL;
+   if (dev->att0 == t)
+      dev->att0 = NULL;
    pipe_sampler_view_reference(&t->view, NULL);
    pipe_surface_reference(&t->surf, NULL);
    pipe_resource_reference(&t->res, NULL);
@@ -929,6 +1141,8 @@ op2mtl_pass_begin(op2mtl_device *dev, const struct op2mtl_pass_attachment color[
          return fail("pass: colour attachment %u is not a render target texture", i), false;
       }
       fb.cbufs[i] = t->surf;
+      if (i == 0)
+         dev->att0 = t;
       fb.nr_cbufs = i + 1;
       w = MIN2(w, t->w);
       h = MIN2(h, t->h);
@@ -1070,6 +1284,89 @@ binding_res(struct binding *b, size_t *size)
    return NULL;
 }
 
+/*
+ * Framebuffer fetch (FABLE-REVIEW B1). CoreAnimation's uber fragment function reads the destination colour for its
+ * programmable blends: 86 of the 162 constant sets backboardd asked for compile to `isamm ... s2en` (ir3's
+ * txf_ms_fb), a texel fetch from a sampler slot ir3 appends after the function's own (ir3_compiler_nir.c: the slot is
+ * so->num_samp at that point). On A6xx the driver binds the framebuffer there; the A4xx driver has no such code, so
+ * the slot was unbound and those layers were blended against nothing (black boxes round text, layers missing).
+ * Here: the slot gets a COPY of colour attachment 0, made before each draw of such a pipeline (the scissor rectangle
+ * when one is set). A copy and not the attachment itself, because sampling a target being rendered has no defined
+ * flush on A4xx; freedreno's resource tracking orders the copy after the draws before it.
+ */
+static void
+pipeline_fb_info(op2mtl_device *dev, op2mtl_pipeline *p)
+{
+   p->fb_known = true;
+   struct ir3_shader *sh = ir3_get_shader((struct ir3_shader_state *)p->fs);   /* waits for the compile */
+   for (struct ir3_shader_variant *v = sh ? sh->variants : NULL; v; v = v->next) {
+      if (v->binning_pass)
+         continue;
+      p->fb_read = v->fb_read;
+      p->fb_count = (unsigned)MAX2(v->num_samp, 0);
+      /* ir3 starts its count at the last texture the function uses, plus images (ir3_compiler_nir.c, "Find # of
+       * samplers"), and gives each fetch the next slot */
+      p->fb_first = BITSET_LAST_BIT(sh->nir->info.textures_used) + sh->nir->info.num_images;
+      break;
+   }
+   if (p->fb_read && (p->fb_first >= p->fb_count || p->fb_count > MAX_TEX)) {
+      say("pipeline: framebuffer fetch at samplers [%u, %u): not served", p->fb_first, p->fb_count);
+      p->fb_read = false;
+   }
+   if (p->fb_read && !(dev->fb_said & (1u << p->fb_first))) {
+      dev->fb_said |= 1u << p->fb_first;
+      say("pipeline: a fragment function reads the framebuffer at sampler %u (of %u)%s", p->fb_first, p->fb_count,
+          dev->no_fbfetch ? " (OP2MTL_NOFBFETCH: left unbound)" : "");
+   }
+}
+
+/* the shadow holds what colour attachment 0 holds now, within the scissor; false = no fetch for this draw */
+static bool
+fb_shadow_update(op2mtl_device *dev)
+{
+   struct pipe_context *pipe = dev->pipe;
+   struct pipe_surface *cb = dev->fb.cbufs[0];
+   if (!cb || !cb->texture)
+      return false;
+   struct pipe_resource *rt = cb->texture;
+   if (!dev->fb_shadow || dev->fb_shadow->width0 != rt->width0 || dev->fb_shadow->height0 != rt->height0 ||
+       dev->fb_shadow->format != rt->format) {
+      pipe_sampler_view_reference(&dev->fb_shadow_view, NULL);
+      pipe_resource_reference(&dev->fb_shadow, NULL);
+      dev->fb_shadow = dev->screen->resource_create(dev->screen, &(struct pipe_resource){
+         .target = PIPE_TEXTURE_2D, .format = rt->format, .width0 = rt->width0, .height0 = rt->height0,
+         .depth0 = 1, .array_size = 1, .bind = PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_RENDER_TARGET });
+      if (dev->fb_shadow) {
+         struct pipe_sampler_view vt;
+         u_sampler_view_default_template(&vt, dev->fb_shadow, dev->fb_shadow->format);
+         dev->fb_shadow_view = pipe->create_sampler_view(pipe, dev->fb_shadow, &vt);
+      }
+      if (!dev->fb_shadow_view) {
+         say("framebuffer fetch: no %ux%u %s shadow: the fetch reads nothing", rt->width0, rt->height0,
+             util_format_short_name(rt->format));
+         pipe_resource_reference(&dev->fb_shadow, NULL);
+         return false;
+      }
+      say("framebuffer fetch: shadow %ux%u %s", rt->width0, rt->height0, util_format_short_name(rt->format));
+   }
+   struct pipe_box box = { .width = (int)dev->fb.width, .height = (int)dev->fb.height, .depth = 1 };
+   if (dev->scissor_on) {
+      box.x = dev->scissor.minx;
+      box.y = dev->scissor.miny;
+      box.width = (int)dev->scissor.maxx - (int)dev->scissor.minx;
+      box.height = (int)dev->scissor.maxy - (int)dev->scissor.miny;
+   }
+   if (box.width <= 0 || box.height <= 0)
+      return true;   /* nothing can be drawn, so nothing is read */
+   pipe->resource_copy_region(pipe, dev->fb_shadow, 0, (unsigned)box.x, (unsigned)box.y, 0, rt, 0, &box);
+   dev->fb_draws++;
+   dev->fb_pixels += (uint64_t)box.width * (uint64_t)box.height;
+   if (dev->fb_draws == 1 || dev->fb_draws % 2000 == 0)
+      say("framebuffer fetch: %llu draws so far, %llu Mpixel copied", (unsigned long long)dev->fb_draws,
+          (unsigned long long)(dev->fb_pixels >> 20));
+   return true;
+}
+
 /* everything the current pipeline reads, bound; fails (by name) on a binding it needs and does not have */
 static bool
 bind_for_draw(op2mtl_device *dev)
@@ -1080,6 +1377,34 @@ bind_for_draw(op2mtl_device *dev)
       return fail("draw: outside a render pass"), false;
    if (!p)
       return fail("draw: no render pipeline state"), false;
+   /* first, before any state of this draw is bound: the copy is a draw of its own that saves and restores state */
+   if (!p->fb_known)
+      pipeline_fb_info(dev, p);
+   if (p->fb_read && !(dev->fb_said & (1u << p->fb_first))) {
+      dev->fb_said |= 1u << p->fb_first;
+      say("pipeline: a fragment function reads the framebuffer: a texel fetch from slot %u%s", p->fb_first,
+          dev->no_fbfetch ? " (OP2MTL_NOFBFETCH: left unbound)" : "");
+   }
+   /*
+    * The fetch reads the target in place by default: on fd4 rendering is sysmem, so after a texture barrier (a flush
+    * on freedreno) the target's memory holds everything drawn before this draw, and each fragment reads its own
+    * pixel before writing it, which is what Metal's fetch promises. The shadow copy (OP2MTL_FBCOPY) goes through
+    * Mesa's 3D blitter in the middle of the pass, and rounds fable-16/17 hung the GPU on nearly every commit with it.
+    */
+   bool fetch = false;
+   struct pipe_sampler_view *fetch_view = NULL;
+   if (p->fb_read && !dev->no_fbfetch) {
+      if (dev->fb_copy) {
+         fetch = fb_shadow_update(dev);
+         fetch_view = dev->fb_shadow_view;
+      } else if (dev->att0 && dev->att0->view && dev->fb.cbufs[0] == dev->att0->surf) {
+         dev->pipe->texture_barrier(dev->pipe, PIPE_TEXTURE_BARRIER_FRAMEBUFFER);
+         fetch = true;
+         fetch_view = dev->att0->view;
+         if (++dev->fb_draws == 1 || dev->fb_draws % 2000 == 0)
+            say("framebuffer fetch: %llu draws so far (in place)", (unsigned long long)dev->fb_draws);
+      }
+   }
 
    pipe->bind_vs_state(pipe, p->vs);
    pipe->bind_fs_state(pipe, p->fs);
@@ -1144,10 +1469,15 @@ bind_for_draw(op2mtl_device *dev)
          pipe->set_shader_buffers(pipe, ps, 0, n, sb, 0);
       }
       unsigned ntex = util_last_bit(p->textures[st]);
+      bool fetch_here = fetch && st == 1;
+      if (fetch_here)
+         ntex = MAX2(ntex, p->fb_count);
       if (ntex) {
          struct pipe_sampler_view *views[MAX_TEX] = { 0 };
          for (unsigned i = 0; i < ntex && i < MAX_TEX; i++) {
-            if (dev->tex[st][i]) {
+            if (fetch_here && i >= p->fb_first && i < p->fb_count) {
+               views[i] = fetch_view;   /* the fetch's slot, whatever CA bound at that index */
+            } else if (dev->tex[st][i]) {
                views[i] = dev->tex[st][i]->view;
             } else if (p->textures[st] & (1u << i)) {
                /* sampled but unbound: an A4xx texture slot with no state hangs the GPU (round g5b-3,
@@ -1159,13 +1489,19 @@ bind_for_draw(op2mtl_device *dev)
                }
             }
          }
+         /* no slot below the count may be empty: an A4xx texture slot with no state hangs the GPU (round g5b-3),
+          * and the fetch slot can sit above slots the function does not use (round fable-16: a hang every commit) */
+         for (unsigned i = 0; i < ntex && i < MAX_TEX; i++)
+            if (!views[i])
+               views[i] = dev->zero_view;
          pipe->set_sampler_views(pipe, ps, 0, MIN2(ntex, MAX_TEX), 0, false, views);
       }
       unsigned nsmp = MAX2(util_last_bit(p->samplers[st]), ntex);
       if (nsmp) {
          void *smp[MAX_TEX] = { 0 };
          for (unsigned i = 0; i < nsmp && i < MAX_TEX; i++)
-            smp[i] = p->inline_sampler[st][i] ? p->inline_sampler[st][i] :
+            smp[i] = fetch_here && i >= p->fb_first && i < p->fb_count ? dev->default_sampler :
+                     p->inline_sampler[st][i] ? p->inline_sampler[st][i] :
                      dev->smp[st][i] ? dev->smp[st][i]->cso : dev->default_sampler;
          pipe->bind_sampler_states(pipe, ps, 0, MIN2(nsmp, MAX_TEX), smp);
       }
@@ -1218,6 +1554,7 @@ op2mtl_pass_end(op2mtl_device *dev)
 {
    pthread_mutex_lock(&dev->lock);
    dev->in_pass = false;
+   dev->att0 = NULL;
    pthread_mutex_unlock(&dev->lock);
 }
 

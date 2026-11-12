@@ -14,7 +14,7 @@
 +    files('../../../compiler/air/op2mtl.c'),
 +    name_prefix : '',
 +    include_directories : [inc_include, inc_src, inc_mapi, inc_mesa, inc_gallium,
-+                           inc_gallium_aux, inc_gallium_winsys_sw, inc_gallium_winsys,
++                           inc_gallium_aux, inc_gallium_winsys_sw, inc_gallium_winsys, inc_freedreno,
 +                           include_directories('../../drivers'), include_directories('../../../compiler/air')],
 +    dependencies : [dep_m, idep_air, idep_mesautil, driver_softpipe, driver_freedreno, dep_libdrm],
 +    link_with : [libgallium, libgalliumvl_stub, libws_null, libfreedrenowinsys],
