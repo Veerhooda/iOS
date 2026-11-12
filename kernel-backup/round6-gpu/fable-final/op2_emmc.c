@@ -1043,6 +1043,11 @@ op2_emmc_dump_stats(void)
 	    op2_emmc_multi_ok);
 	printf("OP2 eMMC DMA: cmds=%llu fails=%llu enabled=%d\n", (unsigned long long)op2_emmc_dma_cmds,
 	    (unsigned long long)op2_emmc_dma_fails, op2_emmc_dma_ok);
+	if (op2_emmc.regs) {
+		printf("OP2 eMMC bus: clock ctl 0x%04x host ctl 0x%02x host ctl2 0x%04x caps 0x%08x/0x%08x\n",
+		    sdhc_rd16(SDHCI_CLOCK_CONTROL), sdhc_rd8(SDHCI_HOST_CONTROL), sdhc_rd16(SDHCI_HOST_CONTROL2),
+		    sdhc_rd32(SDHCI_CAPABILITIES), sdhc_rd32(SDHCI_CAPABILITIES + 4));
+	}
 	printf("OP2 eMMC STATS: reads=%llu rd_fail=%llu wr_fail=%llu map_fail=%llu oob=%llu retry_ok=%llu wr_retry_ok=%llu recoveries=%llu fails_recorded=%u%s\n",
 	    (unsigned long long)op2_emmc_read_blocks,
 	    (unsigned long long)op2_emmc_fail_rd,

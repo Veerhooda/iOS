@@ -31,7 +31,8 @@ def slot(path, size, src=None):
     print('  [G5] %s: %d-byte slot%s' % (path[len(root):], size, ' (%d bytes of %s)' % (len(data), src) if src else ''))
 
 
-slot(os.path.join(root, 'usr/local/lib/op2mtl.dylib'), 24 * MiB)
+op2mtl = os.path.join(here, '..', 'out', 'mesa-ios', 'out', 'op2mtl.dylib')   # the current driver (tools/mesa-ios.sh)
+slot(os.path.join(root, 'usr/local/lib/op2mtl.dylib'), 24 * MiB, op2mtl if os.path.exists(op2mtl) else None)
 op2metal = os.path.join(here, '..', 'userland', 'OP2Metal', 'build', 'OP2Metal.bundle', 'OP2Metal')
 if os.path.exists(op2metal):
     slot(os.path.join(root, 'System/Library/Extensions/OP2Metal.bundle/OP2Metal'), MiB, op2metal)

@@ -87,6 +87,14 @@ Goal: never let the SoC cook; log temperature on every `OP2 TOP` line; throttle;
   osfmk "software timer deadline exceeded"), whose Android kernel has thermal control.
 - Verify with a 15-min round: temperature trace in the log, user reports less heat.
 
+### Task 1b: USB console and shell (live debugging; docs/USB-CONSOLE-PLAN.md)
+
+Thermal safety is in (op2_snapshot.c op2_thermal_thread: TSENS, throttle at 70 C with LK's 1.0 V, cutoff 90 C).
+Next foundation item the user asked for: a live kernel log, then a root shell, over a USB CDC-ACM gadget on the
+DWC3 controller (stage 1-2), SSH later (stage 3). Full register map, steps and risks in docs/USB-CONSOLE-PLAN.md.
+The game work (out/games, tools/games/build-orangetree.sh: OrangeTree launches to a blank screen after the rpath
+fix -- debug it with the shell) waits on this.
+
 ### Task 2: quiet background by default (the Low Power Mode effect, permanently)
 
 Evidence: the user enabled Low Power Mode by hand and the phone got cooler and snappier. Background work competes
