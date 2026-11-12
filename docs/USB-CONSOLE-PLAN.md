@@ -108,3 +108,18 @@ dropbear (MIT licence) built for iOS 12 with host keys generated on first run.
 2. Core init + enumeration until the Mac lists the device (System Information / `ioreg -p IOUSB`).
 3. Kernel log streaming.
 4. /dev/op2usb + dash/toybox + launchd job: the shell.
+
+## Probe result (round fable-49, 2026-11-13): LK leaves USB alive
+
+op2_snapshot.c `op2_usb_probe` (read-only, boot and +5 min):
+
+    GDSC usb30 0x80000000 (on); CBCR master 2000cff1 axi 00000001 utmi 00000001 sleep 00000001 hsphy 80000000
+      ahb2phy 20008001 ssaux 00000001 sspipe 80000000
+    RCGR master cfg 00002101, utmi cfg 00000113; BCRs 0
+    DWC3 GSNPSID 5533250a (2.50a) GCTL 00112000 (device) GSTS 3e800000 GUSB2PHYCFG 00002500 GUSB3PIPECTL 030c0002
+    DCFG 0008080c (speed 4 = SS, address 1) DCTL 00f00000 (RUN_STOP 0) DEVTEN 47 DSTS 00d316ec DALEPENA f
+    GEVNT0 0x0f9a6000 size 0x1000 count 0 (LK's buffer: replace before running)
+    QSCRATCH ctrl 19064190 general_cfg 39 hs_phy_ctrl 1d3279b2 param_override 00d190e4 ss_phy_ctrl 71210102
+
+So stage 1 needs no GDSC/clock/PHY/regulator work: own event buffer, DCTL.CSFTRST, DCFG speed HS (0) and address 0,
+DEVTEN, EP0 start config + SETUP TRB, RUN_STOP, then enumeration (gadget.c/ep0.c) and CDC-ACM.
