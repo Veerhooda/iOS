@@ -189,6 +189,65 @@ the 3D core's context at it, and the same uber draw should fault (CB0 FSR/FAR na
 corrupting RAM -- which both contains the damage and tells us the exact address the draw got wrong.
 Until then the air_run job stays OUT of launchd's cache (original xpcd_cache restored); op2-air-run is inert on disk.
 
+## G4d (2026-11-11): GPU behind real SMMU translation; the stray write is Mesa fd4's private memory
+Boot-arg **gpu_xl=1** (off by default; short name because the cmdline is at 248/250 bytes). Kernel:
+kernel-backup/round6-gpu/g4d/ (before: g4d-pre/). Logs: logs/daily-20261111-202130.log (self-test),
+logs/daily-20261111-203437.log (uber draw).
+
+How (after Linux msm_iommu-v1.c __program_context, reference/kernel-oneplus-msm8994/drivers/iommu):
+- CB0 = gfx3d_user (SID 0) is the only bank KGSL attaches on 8994 (priv_bank_table is v0-only); CB1 untouched.
+  Only CB registers are written (CBAR/SMR are TZ's). TZ accepts them after restore_sec_cfg: SCTLR 0 -> 1 reads back.
+- ARMv7 short descriptors, identity (IOVA = physical), **4 KB pages**: L1 16 KB, L2 tables (1 KB) carved from
+  contiguous 16 KB chunks on demand, per-page refcount. Pages: Normal non-cacheable shareable, RW
+  (TEX=001 C=0 B=0 AP=011) with TEX remap off (SCTLR.TRE=0), so no PRRR/NMRR. Walks non-cacheable; PTEs cleaned to PoC.
+- SCTLR = M only: CFIE=0 (no IRQ; FSR/FAR latch anyway), CFRE=0, CFCFG=0 (terminate). TLBIALL + TLBSYNC after every
+  map/unmap. Faults are polled in waitForFence and named against the client's buffers (describeFaults).
+- Mapped: ring, fence page, every gemNew buffer (NOT its guard band), surfaces segment by segment, self-test IBs.
+  Buffers are unmapped after their last fence. Recovery re-checks CB0 (it has always kept its programming).
+
+Measured:
+1. **ATS resets the SoC.** Any CPU-side translation (CB ATS1PR -> PAR), mapped address or not, resets the phone a
+   few ms later, with no panic. Rounds g4d-1..8 were spent finding this, because IOLog's console buffer lost the tail
+   of the log. SMMU bring-up lines now go straight into ramoops (OP2_SMMU_LOG -> op2_ramoops_ap_write). ATS is gone.
+2. Boot self-test, CONTAINED: a mapped write lands; writes to an unmapped page and 0x40 past a mapped page fault
+   with FAR = the exact address (FSYNR0 0x592 = write) and leave the victims untouched; after unmapping a page a write
+   to it faults too (FAR = page base there) and is dropped; the GPU works afterwards. G0 1000/1000, G1 exact.
+3. **After a faulting write the CP stalls** (the fence never retires) even with RAZ/WI: hang recovery restarts it.
+4. **The G4c uber draw under translation: no crash.** ca_uber_fragment_lp0_cp0_fo0 at 1080x1920: 614 write faults,
+   all dropped, GPU hang -> recovered, the process exits, the phone runs to its deadline. The faults start just past
+   a group of small 16 KB buffers (handles 10-13, phys 0x19cd2000-0x19cee000) and climb to 0x5b640 past the last.
+
+**Root cause of G4c:** the shader writes private memory (117 `stp`), and Mesa's fd4 never sizes private memory:
+fd4_context.c allocates one fixed 8 KB fs_pvt/vs_pvt BO and fd4_emit.c writes the constant SP_FS_PVT_MEM_PARAM
+0x08000001. Per-fiber private memory for a full-screen draw is far larger, so it runs past the BO. That is why 4x4
+was fine (few fibers) and clear_frag at full size was fine (no stp). They are not spills: **117 store_scratch,
+0 load_scratch**. The AIR front end (air_to_nir.c) puts allocas and private globals in scratch, and the CA uber
+shaders write a 220-byte struct of function-constant values (hence 0x9c00 in G4b's corrupted PCs) that nothing
+reads. nir_remove_dead_variables cannot drop it (the stores go through pointer casts), and ir3's own scratch
+lowering is gen>=5 only.
+
+## G4e (2026-11-11): fixed in Mesa; the full-size uber draw is correct with zero faults (logs/g4d-air-run-1.txt)
+tools/mesa-op2/ir3-fd4-pvtmem.patch:
+- ir3_nir.c: ir3_nir_remove_write_only_scratch(). If a shader has no load_scratch, every store_scratch is dead
+  (scratch is per invocation): drop them, scratch_size = 0. It runs on every gen, not only has_pvtmem.
+  CA pipelines (tools/ca-compile-captured.sh): 0 stp everywhere; backboardd fo0 140 -> 9 instructions,
+  fo1 141 -> 11, vertex 90 -> 32; SpringBoard fo0 322 -> 182, vertex 85 -> 30.
+- fd4_draw.c: a draw whose VS/FS still has pvtmem_size > 0 is skipped (logged once: "fd4: draw skipped: shader needs
+  private memory"). A4xx private memory stays unsized (PARAM layout and per-SP fiber count unknown) until a shader
+  really needs it.
+On the phone (gpu_xl=1, round g4d-12, the G4c job: tools/g4c-air-run-job.plist):
+    uber ca_uber_fragment_lp0_cp0_fo0 @ 1080x1920 bgra8+blend   2073600/2073600 px = 96 96 96 255 (= G4b run G), exit 0, twice
+    clear_frag                                                  16/16 exact, exit 0, three times
+    kernel: 0 SMMU faults, 0 recoveries after the boot self-test, the phone runs to its deadline
+The new air_run was written in place over /usr/local/bin/op2-air-run, padded with zeros (previous one:
+backup/rootfs/op2-air-run.g4c). The job is out of launchd's cache again (original xpcd_cache restored).
+
+Next: (1) make gpu_xl=1 the default once a normal day's boot (metal=0, and then metal=2) is clean with it;
+(2) the remaining G4 coverage (depth/stencil, MSAA, IOSurface-backed targets) and then G5; (3) Security, not covered by translation alone (automated review, 2026-11-11): any task can open OP2GPUUserClient
+(gate it on an entitlement); one global table for all clients (needs per-client tables or a command parser);
+GET_IOVA returns physical addresses; kOP2Surface binds any surface, including the 0x03400000 panel fallback,
+with no ownership check.
+
 ## Blocked on
 - Building Mesa: needs to be done on the Mac (`brew install meson ninja flex bison` + python mako).
 
@@ -225,3 +284,76 @@ Still open: path_cubic_vert -- ir3 assert (ubo->idx > 0) in ir3_get_shared_drive
 (the binning variant reusing a driver UBO; probably the command-line tool, not the GPU). Not used by the pipelines
 CA asked for in this capture. The sweep's first 57/62 (before fix 1) compiled with every derived variable 0.
 Next (G3): fd4 sysmem draw of a compiled ir3 program into an RGBA8 target.
+
+## G5a (2026-11-11): what CoreAnimation asks of Metal (trace), and the driver design
+OP2Metal now sends its log lines to the kernel log (op2_log -> kOP2Log -> ramoops, "M <process>: ...",
+deduplicated per process with digits dropped; NSLog never reached ramoops). Every selector it does not implement
+is logged by the forwarder. The G2 function-constant capture was removed to make room (71472 of 71552 bytes).
+Trace boot: EXTRA="metal=2", logs/daily-20261111-212016.log.
+
+What backboardd and SpringBoard use (and nothing else in a full boot):
+- device: one command queue (SpringBoard: two); newFunction ca_uber_vertex_lp0 / ca_uber_fragment_lp0_cp0_fo0 with
+  function constants; ~65 render pipeline states made up front in backboardd, 8 in SpringBoard
+- render targets: IOSurface textures, backboardd 1242x2208 format 80 (BGRA8Unorm) x2 (double buffered);
+  SpringBoard 162x162 and 2592x2592 format 80, 256x1 format 30 (gradients)
+- textures: replaceRegion:mipmapLevel:(slice:)withBytes:bytesPerRow:(bytesPerImage:), storageMode, setLabel:
+- render encoder: setViewport:, setScissorRect:, setRenderPipelineState:, setVertexBuffer:offset:atIndex:,
+  setVertexBufferOffset:atIndex:, setFragmentTexture:atIndex:, setFragmentSamplerState:atIndex:,
+  setFragmentBuffer:offset:atIndex:, setFragmentBufferOffset:atIndex:,
+  drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:, endEncoding
+- device (SpringBoard): newTextureLayoutWithDescriptor:isHeapOrBufferBacked:
+- NOT used: drawables, presentDrawable, blit encoders, compute. CA renders into IOSurfaces and swaps them through
+  the framebuffer itself (our kernel FB path already does that).
+
+Design:
+- /usr/local/lib/op2mtl.dylib: Mesa fd4 + the AIR front end, linked as air_run is (~9-10 MB), behind a C API:
+  device; pipeline (vertex + fragment function, constants, colour format, blend) compiled through AIR->NIR->ir3;
+  buffers (BOs, CPU-mapped); textures incl. IOSurfaces (kernel kOP2Surface import, mapped per segment under the
+  SMMU); replace_region; samplers; render pass begin (load/clear) / state / indexed draw / end + fence.
+  air_run already does every one of these: it is the starting point.
+- OP2Metal stays a thin shim: dlopen the library, implement exactly the selectors above on it, keep today's stubs
+  when the library is absent (an all-zero slot) or fails.
+- Every G5 boot with gpu_xl=1. The cmdline has room for metal=2 or gpu_xl=1, not both: flip gpu_xl's default or
+  free bytes before G5 boots.
+- Room on the rootfs: tools/rootfs_g5.py (run by tools/rootfs-journal.sh, needs sudo, ONCE) makes a 24 MiB zero slot
+  for op2mtl.dylib and gives OP2Metal a 1 MiB slot; after that both are replaced in place by tools/op2hfs.py.
+
+## G5a-1 (2026-11-11): op2mtl, the driver core: CA's own pipeline draws on the phone (logs/g5a-op2mtl-2.txt)
+userland/op2mtl/: op2mtl.h (the C API, Metal's own enum values), op2mtl.c (air_run's proven draw path behind it),
+op2mtl_test.c. Built by tools/mesa-ios.sh (sources copied into src/compiler/air every run; targets in
+tools/mesa-op2/op2mtl-meson.patch, present only when the sources are, so the host build is unaffected):
+out/mesa-ios/out/op2mtl.dylib (8.4 MB, install name /usr/local/lib/op2mtl.dylib, 35 exported op2mtl_* calls) and
+op2mtl_test (52 KB, links it). On the phone: the dylib in its 24 MiB slot; the test in /usr/local/bin/op2-air-run's
+slot (that slot's previous content: backup/rootfs/op2-air-run.g5a-slot), job tools/g5a-op2mtl-test-job.plist
+(output /var/tmp/op2mtl); the job is OUT of launchd's cache again.
+What it does: device (fd4 screen, FD_MESA_DEBUG=sysmem); metallib libraries; pipelines from a vertex + fragment
+function with function constants, the vertex descriptor turned into Gallium vertex elements by the front end's
+driver_location, blend per attachment; buffers whose `contents` is the BO's own CPU mapping (an UNSYNCHRONIZED
+map kept for the buffer's life: freedreno has no persistent maps); textures and IOSurface textures
+(resource_from_handle(WINSYS_HANDLE_TYPE_FD, IOSurface ID): freedreno's dmabuf import IS the kOP2Surface import on
+this port); samplers incl. the shader's inline ones; render passes with load/clear, Metal's viewport (negative y,
+clip_halfz) and scissor; draws and indexed draws; commit = flush + fence, wait = fence_finish. A draw whose
+pipeline reads a binding that is not set is refused by name (that is how the first run said what CA's vertex
+function reads).
+Measured (gpu_xl=1, round g5a-op2mtl-2): CA's ca_uber_vertex_lp0 + ca_uber_fragment_lp0_cp0_fo0 with backboardd's
+constants, 7 stage-in attributes from one interleaved buffer, an identity transform in vertex constant buffer 1,
+an indexed quad over the middle half of a 1080x1920 BGRA8 target: fence completed, 512416 of 512416 pixels inside
+drawn, 0 of 1549184 outside, 0 SMMU faults, no hang. CA's vertex function reads constant buffers 1, 2, 3, 5; its
+fragment function 0, 1, 2, 3, 5 and samplers 0..5. Geometry is verified; the COLOUR is not (the fragment
+constants are a byte pattern; the inside varies by quadrant): CA's real buffer contents come with the shim.
+Next: the OP2Metal shim (dlopen op2mtl.dylib; MTLBuffer/MTLTexture/IOSurface texture/pipeline/encoder selectors of
+the G5a trace onto the API; log CA's pipeline descriptors and bindings), then metal=2 boots.
+
+## G5b (2026-11-12): the OP2Metal shim on op2mtl; CoreAnimation composites on the Adreno
+OP2Metal maps CA's Metal calls onto op2mtl (buffers, IOSurface / bytes-no-copy / ASTC textures, samplers, function
+constants via hooked MTLFunctionConstantValues setters, pipelines, render passes, synchronous commit + wait). Levels:
+`metal=2` = only backboardd gets the Metal device (SpringBoard and apps draw with the CPU); `metal=3` = every process.
+Fourteen rounds, logs `logs/g5b-round*.out` and the daily logs of the same times; every fix and its peer reference is
+in `docs/PEER-FINDINGS.md`. Kernel snapshots `kernel-backup/round6-gpu/g5b-*` (g5b-13 = state of commit 758c0a6).
+Measured: backboardd ~120-280 pipelines at ~0.7 s each, ~7 ms GPU per commit, 0 failed draws, no SMMU faults.
+Phone (user's eyes): `metal=3` composites the home screen with right icons/colours but pages don't snap and no app
+launches; `metal=2` launches Settings (rendered mostly right, a yellow wash and cyan bands remain), shows the iOS 12
+wallpaper, but SpringBoard's own layers are missing / text in black boxes; blur materials fail.
+After 758c0a6: op2mtl widens 16-bit varyings to 32 bits (CA's colours are half4; both peers needed this;
+`OP2MTL_F16VARY=1` = old behaviour) and lowers [[point_coord]] to a PNTC input + per-vertex point size (blur shaders).
+Review handover: `docs/FABLE-HANDOVER-PROMPT.md`.

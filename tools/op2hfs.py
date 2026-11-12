@@ -80,14 +80,29 @@ class BTree:
             hdr = rdd(start_block, self.node_size // BS)
         self.hdr = hdr
 
+    def blk(self, fb):
+        """Device block of the catalog's file block fb, through the fork's extents (the volume header's eight;
+        the catalog grew a second extent by round fable-40, after which the old start+offset read garbage)."""
+        if getattr(self, 'extents', None) is None:
+            vh = rdd(0, 1)[1024:1536]
+            self.extents = parse_extents(vh, 0x110 + 16)
+        for s, c in self.extents:
+            if fb < c:
+                return s + fb
+            fb -= c
+        raise IOError('catalog block beyond its eight extents (extents overflow file not read)')
+
     def node(self, n):
         nb = self.node_size // BS
         if nb < 1:
             # node smaller than block: read block, slice
             per = BS // self.node_size
-            blk = rdd(self.start + n // per, 1)
+            blk = rdd(self.blk(n // per), 1)
             return blk[(n % per) * self.node_size:(n % per + 1) * self.node_size]
-        return rdd(self.start + n * nb, nb)
+        first = self.blk(n * nb)
+        if self.blk(n * nb + nb - 1) == first + nb - 1:
+            return rdd(first, nb)
+        return b''.join(rdd(self.blk(n * nb + i), 1) for i in range(nb))
 
 
 def parse_extents(b, o):

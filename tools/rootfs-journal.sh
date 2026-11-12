@@ -17,11 +17,15 @@ echo "[3/5] enabling HFS+ journaling"
 diskutil enableJournal "$MNT"
 diskutil info "$MNT" | grep -i -E "journal|File System Personality" || true
 echo "[4/5] seeding prefs"
-sudo python3 tools/rootfs_prefs.py "$MNT"
+sudo OP2_BLUR="${OP2_BLUR:-}" python3 tools/rootfs_prefs.py "$MNT"
 # G3: the Mesa/freedreno draw test, when it has been built (tools/mesa-ios.sh)
 if [ -f out/mesa-ios/out/air_run ]; then
   sudo python3 tools/rootfs_g3.py "$MNT"
 fi
+# G5: zero-padded slots for the Metal driver library and a growable OP2Metal (later updates go in place)
+sudo python3 tools/rootfs_g5.py "$MNT"
+# games: every out/games/build/*.app into /Applications (tools/games/build-*.sh)
+sudo python3 tools/rootfs_games.py "$MNT"
 sync
 hdiutil detach "$MNT"
 trap - EXIT

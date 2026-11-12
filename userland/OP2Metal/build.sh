@@ -17,7 +17,7 @@ clang -target arm64-apple-ios12.0 \
       -fobjc-arc \
       -Oz \
       -Wl,-dead_strip -Wl,-no_function_starts -Wl,-no_data_in_code_info \
-      -fvisibility=hidden \
+      -fvisibility=hidden -I"${DIR}/../op2mtl" \
       -Wall \
       -Wno-deprecated-declarations \
       "${DIR}/OP2Metal.m" "${DIR}/op2_metallib.c" \
@@ -32,6 +32,7 @@ cp "${DIR}/Info.plist" "${DIR}/build/OP2Metal.bundle/Info.plist"
 cp "${DIR}/OP2Metal.clients" "${DIR}/build/OP2Metal.bundle/OP2Metal.clients"
 
 echo "[STRIP] Stripping local symbols..."
+cp "${DIR}/build/OP2Metal.bundle/OP2Metal" "${DIR}/build/OP2Metal.unstripped"
 strip -x "${DIR}/build/OP2Metal.bundle/OP2Metal"
 
 echo "[SIGN] Signing OP2Metal.bundle (ad-hoc)..."

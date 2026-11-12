@@ -10,9 +10,13 @@ if os.path.exists(pref):
             data = plistlib.load(f)
         except Exception:
             data = {}
+# Reduce Transparency: on for CPU-drawn boots (software blur is CoreAnimation's most expensive effect); OFF when the
+# GPU composites (OP2_BLUR=1), or the dock, folders and Control Center are flat opaque panels and the GPU blur path is
+# never exercised (G5c, round fable-28: the "missing blur" was this setting)
+reduce_transparency = os.environ.get('OP2_BLUR') != '1'
 data.update({
     'AssistiveTouchEnabled': False,              # assistivetouchd sat at 53% CPU
-    'EnhancedBackgroundContrastEnabled': True,   # Settings > Accessibility > Reduce Transparency
+    'EnhancedBackgroundContrastEnabled': reduce_transparency,   # Settings > Accessibility > Reduce Transparency
 })
 os.makedirs(os.path.dirname(pref), exist_ok=True)
 with open(pref, 'wb') as f:

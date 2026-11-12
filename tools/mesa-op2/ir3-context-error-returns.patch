@@ -1,0 +1,49 @@
+--- a/src/freedreno/ir3/ir3_context.h	2026-11-12 02:23:00
++++ b/src/freedreno/ir3/ir3_context.h	2026-11-12 02:23:00
+@@ -228,8 +228,12 @@
+       ir3_create_collect(build, __arr, ARRAY_SIZE(__arr));                     \
+    })
+ 
+-NORETURN void ir3_context_error(struct ir3_context *ctx, const char *format,
+-                                ...);
++/* op2 (G5b): returns (ctx->error set) instead of being NORETURN: a release build's unreachable() after it is
++ * undefined behaviour, and on the phone it spun two compile threads forever (round g5b-5). Every caller's
++ * emit loop checks ctx->error and fails the compile. */
++void ir3_context_error(struct ir3_context *ctx, const char *format, ...);
++/* op2: when set, gets each compile error as one line (op2mtl logs it) */
++extern void (*ir3_op2_error_hook)(const char *msg);
+ 
+ #define compile_assert(ctx, cond)                                              \
+    do {                                                                        \
+--- a/src/freedreno/ir3/ir3_context.c	2026-11-12 02:23:00
++++ b/src/freedreno/ir3/ir3_context.c	2026-11-12 02:23:11
+@@ -421,11 +421,20 @@
+    }
+ }
+ 
+-NORETURN void
++void (*ir3_op2_error_hook)(const char *msg);
++
++void
+ ir3_context_error(struct ir3_context *ctx, const char *format, ...)
+ {
+    struct hash_table *errors = NULL;
+    va_list ap;
++   if (ir3_op2_error_hook) {
++      char msg[160];
++      va_start(ap, format);
++      vsnprintf(msg, sizeof msg, format, ap);
++      va_end(ap);
++      ir3_op2_error_hook(msg);
++   }
+    va_start(ap, format);
+    if (ctx->cur_instr) {
+       errors = _mesa_hash_table_create(NULL, _mesa_hash_pointer,
+@@ -439,7 +448,6 @@
+    nir_log_shader_annotated(ctx->s, errors);
+    ralloc_free(errors);
+    ctx->error = true;
+-   unreachable("");
+ }
+ 
+ static struct ir3_instruction *
