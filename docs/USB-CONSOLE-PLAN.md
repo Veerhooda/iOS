@@ -139,3 +139,24 @@ Watch: `screen /dev/cu.usbmodem* 115200`, or tools/usb-console-watch.sh (records
 round).
 
 Next: stage 2, the shell (dash + toybox, /dev/op2usb character device on the in/out rings, launchd job).
+
+## Stage 2 WORKS (2026-11-13 ~03:17 IST)
+
+The launchd job `com.op2.shell` in the xpcd cache starts `/usr/local/bin/op2-air-run` (the `op2shell` launcher).
+It installs dash/toybox/dropbear/scp, opens `/dev/op2usb`, and runs `dash -i`; the USB console shows the
+`OnePlus 2 iOS root shell (dash)` banner and an `op2#` prompt.
+
+## Stage 3 WORKS (2026-11-13 08:00 IST)
+
+The fixed launcher (dropbear 2026.94 built with `DROPBEAR_SVR_DROP_PRIVS 0`, host keys via `-R`, embedded
+`authorized_keys`) serves SSH on the CDC-ECM link:
+
+- Mac `en9` = 192.168.7.1/24 (MAC 02:00:5e:77:ee:01), phone `ue0` = 192.168.7.2/24 (MAC 02:00:5e:77:ee:02).
+- `ssh root@192.168.7.2` with `~/.ssh/id_ed25519` works; `/tmp/dropbear.log` shows `Pubkey auth succeeded`.
+- `scp -O` upload/download works after `ln -s /usr/local/bin/scp /usr/bin/scp`: dropbear gives non-login
+  sessions `PATH=/usr/sbin:/usr/bin:/sbin:/bin`, so the remote scp needs the link. Interactive logins get
+  `/usr/local/bin` from `/var/root/.profile` (`export PATH=/usr/local/bin:$PATH`).
+- Toybox `id` segfaults on iOS 12 (avoid it); `date` is not built. Everything else in the applet set works.
+- Test transcript: `logs/ssh-test.txt`.
+- Build recipes: `tools/build-toybox.sh`, `tools/build-dropbear.sh`, then `tools/build-op2shell.sh --install`
+  (phone in TWRP). The dropbear binary rebuilt from the recipe is byte-identical to the installed one.

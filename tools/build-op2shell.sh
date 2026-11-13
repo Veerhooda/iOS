@@ -6,10 +6,21 @@ cd "$(dirname "$0")/.."
 SDK=/Users/veerhooda/xcode-10.3/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS12.4.sdk
 DASH=out/shell/dash-0.5.12/src/dash
 [ -f "$DASH" ] || { echo "build dash first (out/shell/dash-0.5.12)" >&2; exit 1; }
+TOYBOX=out/shell/build/toybox
+[ -f "$TOYBOX" ] || { echo "build toybox first (tools/build-toybox.sh)" >&2; exit 1; }
+DROPBEAR=out/shell/build/dropbear
+[ -f "$DROPBEAR" ] || { echo "build dropbear first (out/shell/dropbear-*)" >&2; exit 1; }
+SCP=out/shell/build/scp
+[ -f "$SCP" ] || { echo "build dropbear scp first (out/shell/dropbear-*)" >&2; exit 1; }
+AUTHKEYS=out/shell/build/authorized_keys
+[ -f "$AUTHKEYS" ] || { echo "missing $AUTHKEYS (your ssh public key, one line)" >&2; exit 1; }
 mkdir -p out/shell/build
 cp "$DASH" out/shell/build/dash && strip -x out/shell/build/dash && codesign -s - --force out/shell/build/dash
 clang -target arm64-apple-ios12.0 -isysroot "$SDK" -O2 -Wall -Wextra \
-  -DDASH_BIN="\"$PWD/out/shell/build/dash\"" -o out/shell/build/op2shell userland/op2shell/op2shell.c
+  -DDASH_BIN="\"$PWD/out/shell/build/dash\"" -DTOYBOX_BIN="\"$PWD/out/shell/build/toybox\"" \
+  -DDROPBEAR_BIN="\"$PWD/out/shell/build/dropbear\"" -DSCP_BIN="\"$PWD/out/shell/build/scp\"" \
+  -DAUTHKEYS_BIN="\"$PWD/out/shell/build/authorized_keys\"" \
+  -o out/shell/build/op2shell userland/op2shell/op2shell.c
 strip -x out/shell/build/op2shell && codesign -s - -i com.op2.air-run --force out/shell/build/op2shell
 ls -l out/shell/build/dash out/shell/build/op2shell
 if [ "${1:-}" = "--install" ]; then
