@@ -7,7 +7,6 @@ launchd, backboardd and SpringBoard to the Lock Screen and Home Screen.
 
 The kernel lives in its own repository: [Veerhooda/xnu](https://github.com/Veerhooda/xnu) (branch `msm8994`).
 
-
 ---
 
 ## Status (2026-11-13)
@@ -35,7 +34,9 @@ Everything here was measured on the phone; the details and logs are in [docs/GPU
 | **G2** shader compiler | Mesa 25.0.7 + hakios's Metal (AIR) front end built on the Mac, patched for iOS 12's AIR. **Every CoreAnimation pipeline the phone actually asked for compiles for the A430**; 61 of 62 QuartzCore functions with all constants zero. |
 | **G3** first draw | Mesa's own fd4 driver, cross-built for iOS 12, draws on the phone through our kernel: pixel exact. |
 | **G4** what CoreAnimation needs | Texture sampling, varyings, constant buffers, premultiplied blending, BGRA8 targets at full panel size (2 073 600 of 2 073 600 pixels exact), CoreAnimation's real uber shader with its captured function constants. |
-| **G4c** open problem | The uber shader drawn at full panel size **writes outside its buffers**, and with the SMMU in bypass that corrupts kernel memory. The fix in progress is real SMMU translation (identity map of live buffers only), so such a write faults instead. |
+| **G4c** stray writes (fixed) | The uber shader at full panel size wrote outside its buffers. Root cause was dead private-memory stores past fd4's fixed 8 KB buffer; `tools/mesa-op2/ir3-fd4-pvtmem.patch` drops them. |
+| **G4d/G4e** SMMU translation | Real SMMU translation for the A430 (boot-arg `gpu_xl`, off by default, 4 KB identity pages): stray GPU writes fault and are dropped instead of corrupting kernel memory. Full-size draws pixel-correct with zero faults. |
+| **G5** Metal on the Adreno | `op2mtl` (Mesa fd4 behind a C API) plus the `OP2Metal` shim: with `metal=3` CoreAnimation composites the home screen, lock screen and dock blur on the GPU. Open: the OrangeTree game shows blank (SpriteKit pipelines return NULL). |
 
 ---
 
@@ -69,7 +70,7 @@ cat logs/last-summary.txt           # summary; full logs in logs/daily-*.log
 
 ---
 
-## Building the GPU stack
+## Building the stacks
 
 ```bash
 bash tools/mesa-host.sh             # Mesa + AIR front end for this Mac (out/mesa-host): air2nir, ir3_compiler
