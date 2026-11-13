@@ -19,4 +19,6 @@ everything else describes the current tree.
 | `docs/OP2_KERNEL_CHANGES.md` | What we changed in XNU and why |
 | `docs/milestone-*.md` | Dated verification records, oldest first (history, not guides) |
 
+Private material (AI chat transcripts, session prompts, local notes) lives in
+`history/` at the repo root, which is gitignored and never pushed.
 
