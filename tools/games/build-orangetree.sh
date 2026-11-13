@@ -16,7 +16,7 @@ APP=$ROOT/out/games/build/OrangeTree.app
 rm -rf "$WORK" "$APP"; mkdir -p "$WORK" "$APP"
 cp "$SRC"/OrangeTree/*.swift "$WORK"/
 
-# glue: no storyboards
+# glue: no storyboards and robust scene loading
 python3 - "$WORK" <<'PY'
 import sys, re
 w = sys.argv[1]
@@ -28,6 +28,7 @@ s = s.replace('''        // Override point for customization after application l
         window?.makeKeyAndVisible()
         return true''', 1)
 open(p, 'w').write(s)
+
 p = w + '/GameViewController.swift'; s = open(p).read()
 s = s.replace('''    override func viewDidLoad() {''', '''    // op2 build: the view the storyboard made
     override func loadView() {
@@ -35,6 +36,49 @@ s = s.replace('''    override func viewDidLoad() {''', '''    // op2 build: the 
     }
 
     override func viewDidLoad() {''', 1)
+
+# Ensure fallback scene presentation if sks fails
+s = s.replace('''           if let scene = GameScene.Load(level: 1) {
+                // Set the scale mode to scale to fit the window
+                scene.scaleMode = .aspectFill
+                
+                // Present the scene
+                view.presentScene(scene)
+            }''', '''           if let scene = GameScene.Load(level: 1) {
+                scene.scaleMode = .aspectFill
+                view.presentScene(scene)
+            } else {
+                let fallback = GameScene(size: view.bounds.size)
+                fallback.scaleMode = .aspectFill
+                view.presentScene(fallback)
+            }''', 1)
+open(p, 'w').write(s)
+
+p = w + '/GameScene.swift'; s = open(p).read()
+# Add @objc(GameScene) so NSKeyedUnarchiver can instantiate the class from sks
+s = s.replace('class GameScene: SKScene {', '@objc(GameScene)\nclass GameScene: SKScene {', 1)
+# Robust loading with fallback to copy children if unarchiver returns base SKScene
+old_load = '''    static func Load(level: Int) -> GameScene? {
+        return GameScene(fileNamed: "Level-\\(level)")
+    }'''
+new_load = '''    static func Load(level: Int) -> GameScene? {
+        if let scene = GameScene(fileNamed: "Level-\\(level)") {
+            return scene
+        }
+        if let rawScene = SKScene(fileNamed: "Level-\\(level)") {
+            let scene = GameScene(size: rawScene.size)
+            scene.scaleMode = rawScene.scaleMode
+            scene.backgroundColor = rawScene.backgroundColor
+            scene.anchorPoint = rawScene.anchorPoint
+            for child in rawScene.children {
+                child.removeFromParent()
+                scene.addChild(child)
+            }
+            return scene
+        }
+        return nil
+    }'''
+s = s.replace(old_load, new_load, 1)
 open(p, 'w').write(s)
 PY
 
@@ -43,6 +87,28 @@ PY
   -emit-executable -o "$APP/OrangeTree" "$WORK"/*.swift   # the rpaths Xcode adds: the OS Swift runtime (iOS 12.2+)
 
 cp "$SRC"/OrangeTree/Level-*.sks "$APP"/
+# Patch .sks files so unarchiver binds root scene to GameScene
+python3 - "$APP" <<'PY'
+import sys, glob, plistlib
+app = sys.argv[1]
+for f in glob.glob(app + "/Level-*.sks"):
+    try:
+        d = plistlib.load(open(f, "rb"))
+        objs = d.get("$objects", [])
+        for i, o in enumerate(objs):
+            if isinstance(o, dict) and o.get("$classname") == "SKScene":
+                o["$classname"] = "GameScene"
+                classes = list(o.get("$classes", []))
+                if "GameScene" not in classes:
+                    classes.insert(0, "GameScene")
+                o["$classes"] = classes
+            elif isinstance(o, str) and o == "SKScene":
+                objs[i] = "GameScene"
+        plistlib.dump(d, open(f, "wb"), fmt=plistlib.FMT_BINARY)
+    except Exception as e:
+        print(f"Warning: could not patch {f}: {e}")
+PY
+
 cp "$SRC"/OrangeTree/Smashing-Things.atlas/*.png "$APP"/   # SKTexture(imageNamed:) finds bundle images
 
 # launch images: without a launch screen iOS runs the app letterboxed at 320x480

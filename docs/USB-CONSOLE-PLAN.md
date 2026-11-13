@@ -108,3 +108,55 @@ dropbear (MIT licence) built for iOS 12 with host keys generated on first run.
 2. Core init + enumeration until the Mac lists the device (System Information / `ioreg -p IOUSB`).
 3. Kernel log streaming.
 4. /dev/op2usb + dash/toybox + launchd job: the shell.
+
+## Probe result (round fable-49, 2026-11-13): LK leaves USB alive
+
+op2_snapshot.c `op2_usb_probe` (read-only, boot and +5 min):
+
+    GDSC usb30 0x80000000 (on); CBCR master 2000cff1 axi 00000001 utmi 00000001 sleep 00000001 hsphy 80000000
+      ahb2phy 20008001 ssaux 00000001 sspipe 80000000
+    RCGR master cfg 00002101, utmi cfg 00000113; BCRs 0
+    DWC3 GSNPSID 5533250a (2.50a) GCTL 00112000 (device) GSTS 3e800000 GUSB2PHYCFG 00002500 GUSB3PIPECTL 030c0002
+    DCFG 0008080c (speed 4 = SS, address 1) DCTL 00f00000 (RUN_STOP 0) DEVTEN 47 DSTS 00d316ec DALEPENA f
+    GEVNT0 0x0f9a6000 size 0x1000 count 0 (LK's buffer: replace before running)
+    QSCRATCH ctrl 19064190 general_cfg 39 hs_phy_ctrl 1d3279b2 param_override 00d190e4 ss_phy_ctrl 71210102
+
+So stage 1 needs no GDSC/clock/PHY/regulator work: own event buffer, DCTL.CSFTRST, DCFG speed HS (0) and address 0,
+DEVTEN, EP0 start config + SETUP TRB, RUN_STOP, then enumeration (gadget.c/ep0.c) and CDC-ACM.
+
+## Stage 1 WORKS (round fable-50, 2026-11-13 02:25)
+
+bsd/dev/op2_usb.c (added to bsd/conf/files; started from op2_snapshot.c after op2_usb_probe; console bytes via
+pexpert/arm/pe_serial.c `op2_usb_putc_hook` in op2_ramoops_td0): takeover (RUN_STOP off, CSFTRST, own event
+buffer masked/polled, DCFG high speed, DEVTEN reset/connect/disconnect, EP0 STARTCFG + config, SETUP TRB, RUN),
+EP0 state machine (GET_DESCRIPTOR device/config/string, SET_ADDRESS, SET_CONFIGURATION, GET_STATUS,
+GET/SET_LINE_CODING, SET_CONTROL_LINE_STATE; else stall), CDC-ACM (EP1 bulk 512 both ways, EP2 interrupt),
+console ring 64 KB drained to bulk IN by a 1 ms polling thread, bulk OUT into a 4 KB ring (for stage 2).
+
+First boot: the Mac listed "OP2 USB console" (0525:a4a7) at high speed; macOS asked to allow the accessory (Apple
+silicon accessory security: click Allow every new boot it asks); /dev/cu.usbmodem00011 streamed the live kernel log.
+Watch: `screen /dev/cu.usbmodem* 115200`, or tools/usb-console-watch.sh (records logs/usb-console.log during a
+round).
+
+Next: stage 2, the shell (dash + toybox, /dev/op2usb character device on the in/out rings, launchd job).
+
+## Stage 2 WORKS (2026-11-13 ~03:17 IST)
+
+The launchd job `com.op2.shell` in the xpcd cache starts `/usr/local/bin/op2-air-run` (the `op2shell` launcher).
+It installs dash/toybox/dropbear/scp, opens `/dev/op2usb`, and runs `dash -i`; the USB console shows the
+`OnePlus 2 iOS root shell (dash)` banner and an `op2#` prompt.
+
+## Stage 3 WORKS (2026-11-13 08:00 IST)
+
+The fixed launcher (dropbear 2026.94 built with `DROPBEAR_SVR_DROP_PRIVS 0`, host keys via `-R`, embedded
+`authorized_keys`) serves SSH on the CDC-ECM link:
+
+- Mac `en9` = 192.168.7.1/24 (MAC 02:00:5e:77:ee:01), phone `ue0` = 192.168.7.2/24 (MAC 02:00:5e:77:ee:02).
+- `ssh root@192.168.7.2` with `~/.ssh/id_ed25519` works; `/tmp/dropbear.log` shows `Pubkey auth succeeded`.
+- `scp -O` upload/download works after `ln -s /usr/local/bin/scp /usr/bin/scp`: dropbear gives non-login
+  sessions `PATH=/usr/sbin:/usr/bin:/sbin:/bin`, so the remote scp needs the link. Interactive logins get
+  `/usr/local/bin` from `/var/root/.profile` (`export PATH=/usr/local/bin:$PATH`).
+- Toybox `id` segfaults on iOS 12 (avoid it); `date` is not built. Everything else in the applet set works.
+- Test transcript: `logs/ssh-test.txt`.
+- Build recipes: `tools/build-toybox.sh`, `tools/build-dropbear.sh`, then `tools/build-op2shell.sh --install`
+  (phone in TWRP). The dropbear binary rebuilt from the recipe is byte-identical to the installed one.
