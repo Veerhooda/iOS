@@ -11,7 +11,9 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 HAKIOS=$ROOT/reference/hakios-xnu-kernel
 VERSION=25.0.7
 SHA256=592272df3cf01e85e7db300c449df5061092574d099da275d19e97ef0510f8a6
-SDK=/Users/veerhooda/xcode-10.3/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS12.4.sdk
+source "$ROOT/tools/env.sh"
+op2_require_xcode || exit 1
+SDK="$IPHONEOS_SDK"
 MACSDK=$(xcrun --sdk macosx --show-sdk-path)
 B=$ROOT/out/mesa-ios
 SRC=$B/mesa-$VERSION
@@ -57,7 +59,7 @@ export PATH=$ROOT/out/mesa-host/tools/bin:$ROOT/out/mesa-host/venv/bin:$PATH
 TC=/usr/bin
 FLAGS="'-target', 'arm64-apple-ios12.0', '-isysroot', '$SDK', '-idirafter', '$B/iokit-include'"
 # Xcode 10 kept libc++'s headers in the toolchain, not the SDK: the ones that match iOS 12's libc++.dylib
-LIBCXX=/Users/veerhooda/xcode-10.3/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/include/c++/v1
+LIBCXX=$XCODE_ROOT/Toolchains/XcodeDefault.xctoolchain/usr/include/c++/v1
 CXXFLAGS_EXTRA="'-nostdinc++', '-isystem', '$LIBCXX'"
 cat > cross.ini <<INI
 [binaries]

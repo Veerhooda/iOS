@@ -1,7 +1,9 @@
 # Master Knowledge Base & Engineering Handover: iOS 12.5.7 on OnePlus 2 (MSM8994)
 
 **Target Hardware:** OnePlus 2 (`oneplus2` / `ONE A2003`), Qualcomm Snapdragon 810 v2.1 (`MSM8994`), Adreno 430, 4 GB LPDDR4, 64 GB eMMC 5.0  
-**Host Environment:** macOS Sequoia 15.3 (Apple Silicon arm64), Xcode 10.3 toolchain (`/Users/veerhooda/xcode-10.3`), Homebrew LLVM (`clang`, `ld.lld`, `llvm-objcopy`), Android Platform Tools (`adb`, `fastboot`)  
+**Host Environment:** macOS on Apple Silicon arm64, Xcode 10.3 toolchain at `$HOME/xcode-10.3`
+(override: `XCODE_ROOT`; see `tools/env.sh` and `docs/SETUP.md`), Homebrew LLVM (`clang`, `ld.lld`,
+`llvm-objcopy`), Android Platform Tools (`adb`, `fastboot`)  
 **Operating System:** Apple iOS 12.5.7 (Build `16H81`), genuine `n56ap` (iPhone 6 Plus) dyld shared cache  
 **Kernel:** Darwin/XNU `xnu-4903.270.47` (`DEVELOPMENT_ARM64_MSM8994`), native 4 KB page granule  
 **Current Milestone:** **Milestone 26 (Verified on Physical Silicon, 50-Minute Soak Pass)**  
@@ -118,10 +120,10 @@ flowchart TD
 ```
 
 ### 3.2 The Boot Shim Components (`shim/`)
-- [`shim/start.S`](file:///Users/veerhooda/Downloads/OnePlus%202/shim/start.S): Drops from bootloader EL to EL1 (if needed), configures stack pointer, jumps to `main()`.
-- [`shim/main.c`](file:///Users/veerhooda/Downloads/OnePlus%202/shim/main.c): Disables Qualcomm PMIC hardware watchdog registers, queries LK boot tags, parses DTB at `0x2C`.
-- [`shim/loader.c`](file:///Users/veerhooda/Downloads/OnePlus%202/shim/loader.c): Reads `OP2XNU01` container format from ramdisk, relocates segments into DRAM (`0x10200000`), sets up `boot_args` structure (PA `0x102ea000`), and passes control to XNU.
-- [`shim/build.py`](file:///Users/veerhooda/Downloads/OnePlus%202/shim/build.py): Compiles shim with `clang -target aarch64-none-elf`, links via `ld.lld`, injects Little Kernel DTB offset at `0x2C`, appends stock 7-DTB blob (`dtbs.blob`), and generates `out/xnu-boot.img` with `mkbootimg.py`.
+- [`shim/start.S`](../shim/start.S): Drops from bootloader EL to EL1 (if needed), configures stack pointer, jumps to `main()`.
+- [`shim/main.c`](../shim/main.c): Disables Qualcomm PMIC hardware watchdog registers, queries LK boot tags, parses DTB at `0x2C`.
+- [`shim/loader.c`](../shim/loader.c): Reads `OP2XNU01` container format from ramdisk, relocates segments into DRAM (`0x10200000`), sets up `boot_args` structure (PA `0x102ea000`), and passes control to XNU.
+- [`shim/build.py`](../shim/build.py): Compiles shim with `clang -target aarch64-none-elf`, links via `ld.lld`, injects Little Kernel DTB offset at `0x2C`, appends stock 7-DTB blob (`dtbs.blob`), and generates `out/xnu-boot.img` with `mkbootimg.py`.
 
 ---
 
@@ -130,7 +132,7 @@ flowchart TD
 ### 4.1 Topology & Current Configuration
 - **Active Cores:** 4x Cortex-A53 Little cluster cores (CPU 0, 1, 2, 3) running in quad-core SMP (`cpus=4`).
 - **Boot Core:** CPU 0 boots directly from the shim.
-- **Secondary Cores (CPU 1..3):** Brought online dynamically by XNU via `OP2CPU::start()` in [`xnu-4903.270.47/iokit/Kernel/arm/OP2CPU.cpp`](file:///Users/veerhooda/Downloads/OnePlus%202/xnu/xnu-4903.270.47/iokit/Kernel/arm/OP2CPU.cpp).
+- **Secondary Cores (CPU 1..3):** Brought online dynamically by XNU via `OP2CPU::start()` in [`xnu-4903.270.47/iokit/Kernel/arm/OP2CPU.cpp`](../xnu/xnu-4903.270.47/iokit/Kernel/arm/OP2CPU.cpp).
 
 ### 4.2 Core Release Mechanism
 1. Qualcomm TrustZone does **not** implement standard PSCI `CPU_ON` on MSM8994 (returns `0xffffffff`).
@@ -138,7 +140,7 @@ flowchart TD
    - SCM Call: Set boot address for secondary core to `op2_secondary_entry` (PA `0x10496000`).
    - SCM Call: Issue ACC unclamp sequence (power clamp release, GDHS close, core reset de-assert, LDO configure).
    - Issue `SEV` (Send Event) broadcast to wake cores from WFE/WFI loop.
-3. Cores enter `op2_secondary_entry` in [`osfmk/arm64/start.s`](file:///Users/veerhooda/Downloads/OnePlus%202/xnu/xnu-4903.270.47/osfmk/arm64/start.s), initialize MMU using master translation table (`ttep 0x10c41000`), attach to per-CPU data, and signal readiness to master core.
+3. Cores enter `op2_secondary_entry` in [`osfmk/arm64/start.s`](../xnu/xnu-4903.270.47/osfmk/arm64/start.s), initialize MMU using master translation table (`ttep 0x10c41000`), attach to per-CPU data, and signal readiness to master core.
 4. Quad-core SMP cuts boot time from 30+ minutes on 1 core down to ~4-5 minutes.
 
 ---
@@ -154,7 +156,7 @@ flowchart TD
 | `system` | `mmcblk0p42` | 3.0 GB | HFS+ (Read-Only) | Secondary staging / backup root |
 | `userdata` | `mmcblk0p43` | ~53 GB | HFSX (Case-Sensitive) | **iOS 12.5.7 Live Root Filesystem (`emmcroot=userdata`)** |
 
-### 5.2 Driver Implementation ([`op2_emmc.c`](file:///Users/veerhooda/Downloads/OnePlus%202/xnu/xnu-4903.270.47/bsd/dev/op2_emmc.c))
+### 5.2 Driver Implementation ([`op2_emmc.c`](../xnu/xnu-4903.270.47/bsd/dev/op2_emmc.c))
 - Custom XNU block/character device driver (`emmcroot0`, major 22/23).
 - Uses Qualcomm SDHC controller at `0xf9824900` via polled PIO (busy-waiting on `SDHCI_INT_STATUS`).
 - **Direct Aligned Transfer Optimization (Milestone 26):**
@@ -162,8 +164,8 @@ flowchart TD
 - **Reliability Record:** Over 2,019,112 block reads and 1,450,000 writes completed with **0 failures** during the 50-minute soak test.
 
 ### 5.3 Rootfs Staging & Flashing
-- Tool: [`tools/mkop2root.py`](file:///Users/veerhooda/Downloads/OnePlus%202/tools/mkop2root.py) mounts official DMG (`out/038-87140-050.dmg`), creates HFSX volume, copies system files, and applies iOS bring-up patches.
-- Flasher: [`tools/flash_userdata.py`](file:///Users/veerhooda/Downloads/OnePlus%202/tools/flash_userdata.py) streams compressed DMG image directly into `mmcblk0p43` over ADB port forward using `busybox nc -l -p 12345 | gunzip -c | dd of=/dev/block/bootdevice/by-name/userdata` (~30 MB/s transfer rate, ~3.5 min total). Automatically re-arms BCB cookie after streaming.
+- Tool: [`tools/mkop2root.py`](../tools/mkop2root.py) mounts official DMG (`out/038-87140-050.dmg`), creates HFSX volume, copies system files, and applies iOS bring-up patches.
+- Flasher: [`tools/flash_userdata.py`](../tools/flash_userdata.py) streams compressed DMG image directly into `mmcblk0p43` over ADB port forward using `busybox nc -l -p 12345 | gunzip -c | dd of=/dev/block/bootdevice/by-name/userdata` (~30 MB/s transfer rate, ~3.5 min total). Automatically re-arms BCB cookie after streaming.
 
 ---
 
@@ -179,7 +181,7 @@ flowchart TD
 ### 6.2 Display Geometry & Downsampling Architecture
 - **UIKit Logical Resolution:** On iPhone 6 Plus (`N56AP`), UIKit and CoreAnimation render at **3x Retina ($1242 \times 2208$)**.
 - `AppleCLCD::getDisplaySize` reports $1242 \times 2208$ to `backboardd`, causing SpringBoard to allocate $1242 \times 2208$ render surfaces.
-- **The 54-Block 20-Pixel Linear Downsampler ([`OP2Framebuffer.cpp`](file:///Users/veerhooda/Downloads/OnePlus%202/xnu/xnu-4903.270.47/iokit/Kernel/arm/OP2Framebuffer.cpp#L928-L985)):**
+- **The 54-Block 20-Pixel Linear Downsampler ([`OP2Framebuffer.cpp`](../xnu/xnu-4903.270.47/iokit/Kernel/arm/OP2Framebuffer.cpp#L928-L985)):**
   - Converts $1242 \times 2208 \to 1080 \times 1920$ on every frame.
   - Mathematical ratio: $1080 = 54 \times 20$ output pixels, $1242 = 54 \times 23$ input pixels ($23 / 20 = 1.15$).
   - Operates strictly with contiguous 64-bit pair registers (`ldp`/`stp`):
@@ -194,10 +196,10 @@ flowchart TD
 ## 7. Graphics & Metal Acceleration Architecture
 
 ### 7.1 Architecture Overview
-- **Adreno 430 GPU Hardware:** Driven by `OP2GPU` in [`xnu-4903.270.47/iokit/Kernel/arm/OP2GPU.cpp`](file:///Users/veerhooda/Downloads/OnePlus%202/xnu/xnu-4903.270.47/iokit/Kernel/arm/OP2GPU.cpp).
+- **Adreno 430 GPU Hardware:** Driven by `OP2GPU` in [`xnu-4903.270.47/iokit/Kernel/arm/OP2GPU.cpp`](../xnu/xnu-4903.270.47/iokit/Kernel/arm/OP2GPU.cpp).
   - Handles Qualcomm RPM SMD power voting, oxili GDSC power domain uncollapse, Adreno 430 CP microcode loading, and ringbuffer submission.
 - **Kernel User Client:** `OP2GPUUserClient` exposes `msm_drm` ABI, mapping contiguous DDR GEM memory and dispatching EL0 PM4 indirect command buffers.
-- **Userland Driver:** [`userland/OP2Metal/OP2Metal.bundle`](file:///Users/veerhooda/Downloads/OnePlus%202/userland/OP2Metal/OP2Metal.m) implements Apple's Metal runtime interfaces (`MTLDevice`, `MTLCommandQueue`, `MTLCommandBuffer`, `MTLRenderCommandEncoder`, `MTLTexture`).
+- **Userland Driver:** [`userland/OP2Metal/OP2Metal.bundle`](../userland/OP2Metal/OP2Metal.m) implements Apple's Metal runtime interfaces (`MTLDevice`, `MTLCommandQueue`, `MTLCommandBuffer`, `MTLRenderCommandEncoder`, `MTLTexture`).
   - Successfully satisfies `MTLCreateSystemDefaultDevice()`, parses `default.metallib` (62 shaders), and manages `CAMetalLayer` textures.
 
 ### 7.2 Current Operational Mode: CPU Software Rasterization (`metal=0`)
@@ -210,7 +212,7 @@ flowchart TD
 
 ## 8. Input, Touch & Button Subsystem
 
-### 8.1 Digitizer Touch Controller ([`OP2Digitizer.cpp`](file:///Users/veerhooda/Downloads/OnePlus%202/xnu/xnu-4903.270.47/iokit/Kernel/arm/OP2Digitizer.cpp))
+### 8.1 Digitizer Touch Controller ([`OP2Digitizer.cpp`](../xnu/xnu-4903.270.47/iokit/Kernel/arm/OP2Digitizer.cpp))
 - Hardware: Synaptics S3320 over I2C bus 4 (`0xf9927000`, slave address `0x20`).
 - Reports multi-touch coordinates mapped directly to display space ($1080 \times 1920$).
 - Dispatches `IOHIDEvent` packets to `backboardd` via Mach message queues.
@@ -258,14 +260,14 @@ All files must have `0644` permissions and owner `501:501` (`mobile:mobile`):
 
 | Bug / Crash Signature | Root Cause | Structural Fix Applied | Verification |
 | :--- | :--- | :--- | :--- |
-| **Crash A: NSDictionary nil `objects[4]`** | `-[NSUserDefaults ndo_registerDefaults]` calls `MGCopyAnswer(@"SerialNumber")` $\to$ nil (no hardware syscfg). | Injected synthetic device serials in [`tools/mkadt.py`](file:///Users/veerhooda/Downloads/OnePlus%202/tools/mkadt.py) (`serial-number`, `mlb-serial-number`, `region-info`, `model-number`). | `ndoagent` SIGABRT eliminated (17 $\to$ 0). |
-| **Crash B: `routingContextUID` assertion in SpringBoard** | ControlCenter loaded `nowplaying` audio module. `MRAVOutputContextGetSharedAudioPresentationContext()` returned `nil` on audio-less hardware $\to$ passed to `setRoutingContextUID:` $\to$ assertion throw. | Removed `com.apple.mediaremote.controlcenter.nowplaying` from `ModuleWhitelist.plist` in [`tools/mkop2root.py`](file:///Users/veerhooda/Downloads/OnePlus%202/tools/mkop2root.py). | SpringBoard runs 50+ min with 0 SIGABRTs. |
-| **Alignment Fault in `bzero` (`ESR 0x96000061`)** | Carveout at `0x03c00000` mapped with `kIOMapDefaultCache` defaulted to `Device-nGnRnE`. `bzero` executed `dc zva` on Device memory $\to$ alignment fault at 793s. | Restricted carveout strictly to 1080x1920 panel buffers. 1242x2208 surfaces allocate from cached system DRAM via `IOBufferMemoryDescriptor` in [`OP2Surface.cpp`](file:///Users/veerhooda/Downloads/OnePlus%202/xnu/xnu-4903.270.47/iokit/Kernel/arm/OP2Surface.cpp#L806). | Zero kernel aborts across multiple 50-minute soaks. |
-| **`libGFXShared` Segfault** | `_gfxInitializeLibrary` queried IORegistry for `IOGLESBundleName`. Kernel only published macOS desktop `IOGL*` properties $\to$ returned `NULL` $\to$ `CFStringGetLength(NULL)` faulted. | Published `IOGLESBundleName = "OP2Metal"` and `IOGLESMetalBundleName = "OP2Metal"` in [`OP2Framebuffer.cpp`](file:///Users/veerhooda/Downloads/OnePlus%202/xnu/xnu-4903.270.47/iokit/Kernel/arm/OP2Framebuffer.cpp). | Segfault resolved. |
+| **Crash A: NSDictionary nil `objects[4]`** | `-[NSUserDefaults ndo_registerDefaults]` calls `MGCopyAnswer(@"SerialNumber")` $\to$ nil (no hardware syscfg). | Injected synthetic device serials in [`tools/mkadt.py`](../tools/mkadt.py) (`serial-number`, `mlb-serial-number`, `region-info`, `model-number`). | `ndoagent` SIGABRT eliminated (17 $\to$ 0). |
+| **Crash B: `routingContextUID` assertion in SpringBoard** | ControlCenter loaded `nowplaying` audio module. `MRAVOutputContextGetSharedAudioPresentationContext()` returned `nil` on audio-less hardware $\to$ passed to `setRoutingContextUID:` $\to$ assertion throw. | Removed `com.apple.mediaremote.controlcenter.nowplaying` from `ModuleWhitelist.plist` in [`tools/mkop2root.py`](../tools/mkop2root.py). | SpringBoard runs 50+ min with 0 SIGABRTs. |
+| **Alignment Fault in `bzero` (`ESR 0x96000061`)** | Carveout at `0x03c00000` mapped with `kIOMapDefaultCache` defaulted to `Device-nGnRnE`. `bzero` executed `dc zva` on Device memory $\to$ alignment fault at 793s. | Restricted carveout strictly to 1080x1920 panel buffers. 1242x2208 surfaces allocate from cached system DRAM via `IOBufferMemoryDescriptor` in [`OP2Surface.cpp`](../xnu/xnu-4903.270.47/iokit/Kernel/arm/OP2Surface.cpp#L806). | Zero kernel aborts across multiple 50-minute soaks. |
+| **`libGFXShared` Segfault** | `_gfxInitializeLibrary` queried IORegistry for `IOGLESBundleName`. Kernel only published macOS desktop `IOGL*` properties $\to$ returned `NULL` $\to$ `CFStringGetLength(NULL)` faulted. | Published `IOGLESBundleName = "OP2Metal"` and `IOGLESMetalBundleName = "OP2Metal"` in [`OP2Framebuffer.cpp`](../xnu/xnu-4903.270.47/iokit/Kernel/arm/OP2Framebuffer.cpp). | Segfault resolved. |
 | **`itunescloudd` SQLite Crash** | `HSCloudClientGetPreferredVideoQuality` attempted to query `MediaLibrary.sqlitedb`, which did not exist on fresh rootfs $\to$ `errno 2` $\to$ SIGABRT. | Seeded valid SQLite database schema in `/private/var/mobile/Media/iTunes_Control/iTunes/MediaLibrary.sqlitedb`. | `itunescloudd` aborts eliminated. |
 | **Baseband `libARI` NULL Release** | Without cellular modem hardware, `libARI` releases `NULL` ~22x per run. Stock `CFRelease` traps on `NULL`. | Surgical binary patch at `0xdb0d88` in dyld shared cache: `cbz x0, +8` to return early on NULL. | Cellular respawn loop prevented. |
 | **SpringBoard Setup & Lockdown Traps** | SpringBoard halted on activation / setup mode checks without Apple secure element. | Binary patches in SpringBoard: `-[SBSetupManager isInSetupMode] -> return NO`, `-[SBLockdownManager lockdownState] -> return 2 (Activated)`. | Setup assistant bypassed. |
-| **Jetsam Daemon Kill Epidemic** | `n56ap` profile enforces legacy 36 MB footprint limit on daemons (`assistivetouchd`), causing fatal kills on 4 GB device. | Added 256 MB task memory floor in [`osfmk/kern/task.c`](file:///Users/veerhooda/Downloads/OnePlus%202/xnu/xnu-4903.270.47/osfmk/kern/task.c). | Daemons remain permanently resident. |
+| **Jetsam Daemon Kill Epidemic** | `n56ap` profile enforces legacy 36 MB footprint limit on daemons (`assistivetouchd`), causing fatal kills on 4 GB device. | Added 256 MB task memory floor in [`osfmk/kern/task.c`](../xnu/xnu-4903.270.47/osfmk/kern/task.c). | Daemons remain permanently resident. |
 
 ---
 
@@ -327,7 +329,7 @@ adb shell "dd if=/dev/block/bootdevice/by-name/misc bs=1 count=14 2>/dev/null"
 For the incoming engineer / agent taking over:
 
 1. **Adreno 430 Metal Pipeline State Completion:**
-   - In [`userland/OP2Metal/OP2Metal.m`](file:///Users/veerhooda/Downloads/OnePlus%202/userland/OP2Metal/OP2Metal.m):
+   - In [`userland/OP2Metal/OP2Metal.m`](../userland/OP2Metal/OP2Metal.m):
      - The device is currently running in `metal=0` (Apple CPU software rasterizer fallback) because `OP2Metal.m` lacks complete Adreno PM4 packet generation for complex CoreAnimation blend states.
      - Complete the PM4 packet encoder in `OP2MetalCommandBuffer` to emit Adreno draw packets into GPU shared memory (`OP2GPUUserClient`), or build a hybrid architecture where standard 2D layer blits are GPU-accelerated while unsupported shader stages safely pass through to CPU composition.
 2. **Big Cluster (Cortex-A57) SMP Bring-Up:**

@@ -4,7 +4,9 @@
 # Upstream stty (toys/pending) has no Darwin support and stays off.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-SDK=/Users/veerhooda/xcode-10.3/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS12.4.sdk
+source "$(cd "$(dirname "$0")" && pwd)/env.sh"
+op2_require_xcode || exit 1
+SDK="$IPHONEOS_SDK"
 SRC=out/shell/toybox-0.8.12
 [ -d "$SRC" ] || { echo "missing $SRC (see docs/USB-CONSOLE-PLAN.md stage 2)" >&2; exit 1; }
 export PATH="/opt/homebrew/opt/gnu-sed/libexec/gnubin:$PATH"

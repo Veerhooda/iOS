@@ -6,8 +6,10 @@
 # and the texture-atlas PNGs are copied as they are. Output: out/games/build/OrangeTree.app
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
-X=/Users/veerhooda/xcode-10.3/Xcode.app/Contents/Developer
-SDK=$X/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS12.4.sdk
+source "$ROOT/tools/env.sh"
+op2_require_xcode || exit 1
+X="$XCODE_ROOT"
+SDK="$IPHONEOS_SDK"
 SWIFTC=$X/Toolchains/XcodeDefault.xctoolchain/usr/bin/swiftc
 SRC=$ROOT/out/games/OrangeTree
 [ -d "$SRC" ] || git clone -q https://github.com/ellojess/OrangeTree.git "$SRC"

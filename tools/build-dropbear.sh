@@ -4,7 +4,9 @@
 # privilege dropping, so it is off too. Host keys are generated on the phone (-R).
 set -euo pipefail
 cd "$(dirname "$0")/.."
-SDK=/Users/veerhooda/xcode-10.3/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS12.4.sdk
+source "$(cd "$(dirname "$0")" && pwd)/env.sh"
+op2_require_xcode || exit 1
+SDK="$IPHONEOS_SDK"
 SRC=out/shell/dropbear-2026.94
 [ -d "$SRC" ] || { echo "missing $SRC (download dropbear-2026.94.tar.bz2 there)" >&2; exit 1; }
 

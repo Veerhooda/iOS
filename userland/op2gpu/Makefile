@@ -5,7 +5,8 @@ CXX      ?= c++
 CXXFLAGS ?= -O2 -g
 override CXXFLAGS += -std=c++17 -Wall -Wextra -Werror -Iinclude
 CORE     = src/gpu.cpp src/blit.cpp src/checks.cpp
-XCODE    ?= /Users/veerhooda/xcode-10.3/Xcode.app
+XCODE    ?= $(HOME)/xcode-10.3/Xcode.app
+# override: make XCODE=/path/to/Xcode.app
 SDK      ?= $(XCODE)/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS12.4.sdk
 IOS_CXX  ?= clang++ -target arm64-apple-ios12.0 -isysroot $(SDK)
 

@@ -1,4 +1,4 @@
-diff -ruN /Users/veerhooda/oneplus2/reference/hakios-xnu-kernel/tools/mesa/air/air_to_nir.c src/compiler/air/air_to_nir.c
+diff -ruN a/src/compiler/air/air_to_nir.c b/src/compiler/air/air_to_nir.c
 --- a/src/compiler/air/air_to_nir.c	2026-11-11 05:20:17
 +++ b/src/compiler/air/air_to_nir.c	2026-11-11 06:19:06
 @@ -1146,6 +1146,203 @@

@@ -26,16 +26,12 @@ Across Hardware Runs 47 through 51, the complete hardware display pipeline was r
 ### Physical Display Output on Hardware
 Below is the photograph captured directly from the physical OnePlus 2 device during execution:
 
-![Physical Screen Output on OnePlus 2](/Users/veerhooda/.gemini/antigravity/brain/fffd8dd8-6f46-4152-8067-daf53e513a06/user_screen.png)
-
-*Figure 1: OnePlus 2 (`ONE A2003`) hardware running genuine Apple iOS 12.5.7 with physical display output active, Qualcomm 1+ boot logo eliminated, and XNU framebuffer driving the panel.*
+*Figure 1 (photo, local only — not in repo): OnePlus 2 (`ONE A2003`) hardware running genuine Apple iOS 12.5.7 with physical display output active, Qualcomm 1+ boot logo eliminated, and XNU framebuffer driving the panel.*
 
 ### Official Apple Retina Boot Splash
 In Run 51, the procedural approximation was replaced by the official 3x Apple Retina boot asset and capsule progress indicator:
 
-![Authentic Apple Retina Boot Splash](/Users/veerhooda/.gemini/antigravity/brain/fffd8dd8-6f46-4152-8067-daf53e513a06/apple_boot_preview.png)
-
-*Figure 2: Pixel-perfect authentic Apple boot splash rendered into physical DRAM `0x03400000` from `ProgressUI.framework`.*
+*Figure 2 (photo, local only — not in repo): Pixel-perfect authentic Apple boot splash rendered into physical DRAM `0x03400000` from `ProgressUI.framework`.*
 
 ---
 

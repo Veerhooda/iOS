@@ -87,13 +87,14 @@ Goal: never let the SoC cook; log temperature on every `OP2 TOP` line; throttle;
   osfmk "software timer deadline exceeded"), whose Android kernel has thermal control.
 - Verify with a 15-min round: temperature trace in the log, user reports less heat.
 
-### Task 1b: USB console and shell (live debugging; docs/USB-CONSOLE-PLAN.md)
+### Task 1b: USB console, shell, ECM, SSH (done 2026-11-13; docs/USB-CONSOLE-PLAN.md stages 1-3)
 
-Thermal safety is in (op2_snapshot.c op2_thermal_thread: TSENS, throttle at 70 C with LK's 1.0 V, cutoff 90 C).
-Next foundation item the user asked for: a live kernel log, then a root shell, over a USB CDC-ACM gadget on the
-DWC3 controller (stage 1-2), SSH later (stage 3). Full register map, steps and risks in docs/USB-CONSOLE-PLAN.md.
-The game work (out/games, tools/games/build-orangetree.sh: OrangeTree launches to a blank screen after the rpath
-fix -- debug it with the shell) waits on this.
+Live kernel log over CDC-ACM (stage 1), root dash shell on /dev/op2usb with job control + toybox
+(stage 2; isatty needed d_type D_TTY since iOS 12 checks FIODTYPE), composite CDC-ECM with ue0
+192.168.7.2/24 + ping, and dropbear SSH (exec + scp -O + pubkey auth verified; host keys via -R) all work.
+Launcher: userland/op2shell (embeds dash/toybox/dropbear/scp/authorized_keys), installed over the
+op2-air-run slot. Remaining: interactive-pty ssh session by hand, OrangeTree blank-screen game debugging
+(out/games, tools/games/build-orangetree.sh) with the shell.
 
 ### Task 2: quiet background by default (the Low Power Mode effect, permanently)
 

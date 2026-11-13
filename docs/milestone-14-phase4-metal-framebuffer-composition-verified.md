@@ -246,10 +246,10 @@ In `OP2GPU.cpp`:
 ## 5. Artifacts & Code Implementations
 
 All implementation source code and build recipes are maintained under version control:
-- [OP2Metal.m](userland/OP2Metal/OP2Metal.m): Driver bundle implementing `OP2MetalDevice`, `OP2MetalQueue`, `OP2MetalCommandBuffer`, and `OP2MetalBlitEncoder`.
-- [metal_test.m](userland/OP2Metal/metal_test.m): Userspace test harness validating IOKit userclient dispatch, direct hardware framebuffer composition, `MTLCreateSystemDefaultDevice()`, buffer allocs, and command submission.
-- [run-phase4.py](tools/run-phase4.py): Automated test execution runner and ramoops harvester.
-- [build.sh](userland/OP2Metal/build.sh): Compilation and code signing script for `OP2Metal.bundle` and `metal_test`.
+- [OP2Metal.m](../userland/OP2Metal/OP2Metal.m): Driver bundle implementing `OP2MetalDevice`, `OP2MetalQueue`, `OP2MetalCommandBuffer`, and `OP2MetalBlitEncoder`.
+- [metal_test.m](../userland/OP2Metal/metal_test.m): Userspace test harness validating IOKit userclient dispatch, direct hardware framebuffer composition, `MTLCreateSystemDefaultDevice()`, buffer allocs, and command submission.
+- [run-phase4.py](../tools/run-phase4.py): Automated test execution runner and ramoops harvester.
+- [build.sh](../userland/OP2Metal/build.sh): Compilation and code signing script for `OP2Metal.bundle` and `metal_test`.
 
 ---
 

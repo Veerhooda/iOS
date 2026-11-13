@@ -1,6 +1,6 @@
 # GPU bring-up review (2026-11-12, after round 15)
 
-Answer to `docs/FABLE-HANDOVER-PROMPT.md`. Every claim is marked **[V]** verified (seen in code, a log, or a host run
+Answer to `history/FABLE-HANDOVER-PROMPT.md` (private; gitignored). Every claim is marked **[V]** verified (seen in code, a log, or a host run
 made for this review) or **[I]** inferred. Kernel line numbers are in the committed snapshot
 `kernel-backup/round6-gpu/g5b-13/` (the live tree under `xnu/` is gitignored and has moved a few lines since).
 
