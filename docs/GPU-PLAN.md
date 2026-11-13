@@ -356,4 +356,4 @@ launches; `metal=2` launches Settings (rendered mostly right, a yellow wash and 
 wallpaper, but SpringBoard's own layers are missing / text in black boxes; blur materials fail.
 After 758c0a6: op2mtl widens 16-bit varyings to 32 bits (CA's colours are half4; both peers needed this;
 `OP2MTL_F16VARY=1` = old behaviour) and lowers [[point_coord]] to a PNTC input + per-vertex point size (blur shaders).
-Review handover: `docs/FABLE-HANDOVER-PROMPT.md`.
+Review handover: `history/FABLE-HANDOVER-PROMPT.md` (private; gitignored, not pushed).

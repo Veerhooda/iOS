@@ -5,9 +5,8 @@
 set -o errexit
 set -o pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-XNU_SRC="${REPO_ROOT}/xnu/xnu-4903.270.47"
-XCODE_ROOT="/Users/veerhooda/xcode-10.3/Xcode.app/Contents/Developer"
+source "$(cd "$(dirname "$0")" && pwd)/env.sh"
+op2_require_xcode || exit 1
 TOOLCHAIN="${XCODE_ROOT}/Toolchains/XcodeDefault.xctoolchain/usr/bin"
 SDK="${XCODE_ROOT}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.14.sdk"
 

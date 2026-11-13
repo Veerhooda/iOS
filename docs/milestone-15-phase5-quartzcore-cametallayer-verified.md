@@ -216,11 +216,11 @@ During initial execution of the complete pipeline, `tzinit` successfully printed
 ## 4. Modified Files & Artifacts
 
 All changes are maintained in version control:
-- [userland/OP2Metal/OP2Metal.m](userland/OP2Metal/OP2Metal.m): Added QuartzCore `default.metallib` loading, `CAMetalLayer` IOSurface texture creation, `supportsFamily:`, `iosurfaceTextureAlignmentBytes`, and safe `__unsafe_unretained` deallocation.
-- [userland/OP2Metal/metal_test.m](userland/OP2Metal/metal_test.m): Added Step 6 (metallib parsing), Step 7 (`CAMetalLayer` + `IOSurface`), and Step 8 (`MTLRenderCommandEncoder` + presentation).
-- [userland/OP2Metal/build.sh](userland/OP2Metal/build.sh): Integrated `strip -x` and framework links (`-framework QuartzCore`, `-framework IOSurface`).
-- [tools/run-phase5.py](tools/run-phase5.py): Automated test execution harness and ramoops extractor for Phase 5.
-- [logs/hardware-phase5-ramoops.log](logs/hardware-phase5-ramoops.log): Silicon execution log proving 100% pass under iOS 12 `/sbin/launchd`.
+- [userland/OP2Metal/OP2Metal.m](../userland/OP2Metal/OP2Metal.m): Added QuartzCore `default.metallib` loading, `CAMetalLayer` IOSurface texture creation, `supportsFamily:`, `iosurfaceTextureAlignmentBytes`, and safe `__unsafe_unretained` deallocation.
+- [userland/OP2Metal/metal_test.m](../userland/OP2Metal/metal_test.m): Added Step 6 (metallib parsing), Step 7 (`CAMetalLayer` + `IOSurface`), and Step 8 (`MTLRenderCommandEncoder` + presentation).
+- [userland/OP2Metal/build.sh](../userland/OP2Metal/build.sh): Integrated `strip -x` and framework links (`-framework QuartzCore`, `-framework IOSurface`).
+- [tools/run-phase5.py](../tools/run-phase5.py): Automated test execution harness and ramoops extractor for Phase 5.
+- `logs/hardware-phase5-ramoops.log`: Silicon execution log proving 100% pass under iOS 12 `/sbin/launchd`.
 
 ---
 

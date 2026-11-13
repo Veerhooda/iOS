@@ -3,7 +3,9 @@
 # (phone in TWRP). Usage: bash tools/build-op2shell.sh [--install]
 set -euo pipefail
 cd "$(dirname "$0")/.."
-SDK=/Users/veerhooda/xcode-10.3/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS12.4.sdk
+source "$(cd "$(dirname "$0")" && pwd)/env.sh"
+op2_require_xcode || exit 1
+SDK="$IPHONEOS_SDK"
 DASH=out/shell/dash-0.5.12/src/dash
 [ -f "$DASH" ] || { echo "build dash first (out/shell/dash-0.5.12)" >&2; exit 1; }
 TOYBOX=out/shell/build/toybox

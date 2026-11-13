@@ -55,6 +55,8 @@ __asm__(".section __DATA,__authkeys\n"
 #define DROPBEAR "/usr/local/bin/dropbear"
 #define SCP "/usr/local/bin/scp"
 #define AUTHKEYS "/var/root/.ssh/authorized_keys"
+#define DOTPROFILE "/var/root/.profile"
+static const char dotprofile_text[] = "export PATH=/usr/local/bin:$PATH\n";
 
 static void
 say(const char *s)   /* to the console (and so the USB log until the shell opens it) */
@@ -135,21 +137,31 @@ install_authkeys(void)
 	return w == (ssize_t)n ? 0 : -1;
 }
 
-/* applet symlinks for toybox; never shadow an existing file */
+/* tool symlinks; never shadow an existing file. /usr/local/bin is first on the
+ * interactive PATH; /bin covers ssh-exec/scp, whose default PATH lacks it. */
+static void
+install_link(const char *dir, const char *name, const char *target)
+{
+	char path[64];
+	struct stat st;
+	snprintf(path, sizeof(path), "%s/%s", dir, name);
+	if (lstat(path, &st) == 0)
+		return;
+	symlink(target, path);
+}
+
 static void
 install_toybox_links(void)
 {
 	static const char *applets[] = { "ls", "cat", "grep", "od", "wc", "id", "uname", "file", "df", "du",
 		"head", "tail", "tee", "tr", "basename", "dirname", "mkdir", "rm", "cp", "mv", "ln",
 		"touch", "chmod", NULL };
-	char path[64];
-	struct stat st;
 	for (unsigned i = 0; applets[i] != NULL; i++) {
-		snprintf(path, sizeof(path), "/usr/local/bin/%s", applets[i]);
-		if (lstat(path, &st) == 0)
-			continue;
-		symlink("toybox", path);
+		install_link("/usr/local/bin", applets[i], "toybox");
+		install_link("/bin", applets[i], "/usr/local/bin/toybox");
 	}
+	install_link("/bin", "dash", "/usr/local/bin/dash");
+	install_link("/bin", "scp", "/usr/local/bin/scp");
 }
 
 int
@@ -163,6 +175,8 @@ main(void)
 	    install_blob(TOYBOX, op2_toybox_start, op2_toybox_end) == 0 &&
 	    install_blob(DROPBEAR, op2_dropbear_start, op2_dropbear_end) == 0 &&
 	    install_blob(SCP, op2_scp_start, op2_scp_end) == 0 && install_authkeys() == 0;
+	ok = ok && install_blob(DOTPROFILE, (const unsigned char *)dotprofile_text,
+	    (const unsigned char *)(dotprofile_text + sizeof(dotprofile_text) - 1)) == 0;
 	if (ok) {
 		struct stat st;
 		install_toybox_links();

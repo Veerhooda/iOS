@@ -2,7 +2,7 @@
 # Stage Apple's open source HFS for OnePlus 2 built-in filesystem (bsd/op2_hfs).
 set -euo pipefail
 
-XNU_DIR="/Users/veerhooda/Downloads/OnePlus 2/xnu/xnu-4903.270.47"
+XNU_DIR="${XNU_DIR:-$(cd "$(dirname "$0")" && pwd)/../xnu/xnu-4903.270.47}"
 TARGET="$XNU_DIR/bsd/op2_hfs"
 
 if [[ -d "$TARGET" ]]; then

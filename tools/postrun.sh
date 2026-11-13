@@ -2,7 +2,7 @@
 # Post-run pipeline: pull ramoops + newest tracev3 files, mine First-throw stacks.
 # Usage: postrun.sh <run#>   (device must be in recovery/TWRP with adb)
 RUN="$1"
-cd /Users/veerhooda/oneplus2 || exit 1
+cd "$(dirname "$0")/.." || exit 1
 echo "== [run$RUN] pulling ramoops"
 adb pull /sys/fs/pstore/console-ramoops-0 logs/run${RUN}_ramoops.txt 2>&1 | tail -n 1
 echo "== [run$RUN] crash census"

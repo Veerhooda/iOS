@@ -5,7 +5,7 @@
 **Host & Device Serial:** macOS host, ADB/Fastboot Target `ebd7ee57`  
 **OS Target:** Apple iOS 12.5.7 (`16H81`, Darwin 18.7.0 `xnu-4903.270.47`)  
 **Silicon State:** 100% Physical Hardware Execution (No Emulators, No Simulators, No QEMU)  
-**Primary Log Artifact:** [`logs/hardware-milestone25-50min-soak-verified.log`](file:///Users/veerhooda/Downloads/OnePlus%202/logs/hardware-milestone25-50min-soak-verified.log) (224,224 bytes harvested via SRAM ramoops)
+**Primary Log Artifact:** `logs/hardware-milestone25-50min-soak-verified.log` (224,224 bytes harvested via SRAM ramoops)
 
 ---
 
@@ -18,16 +18,16 @@ Milestone 25 establishes a major milestone in performance, stability, and system
    - **Zero watchdog resets, zero kernel panics during execution, and zero process crashes**.
 2. **Elimination of `OP2Buttons` Notification Port Overwrite:**
    - Previous builds suffered from `OP2 Buttons: queue full, key event dropped` because SpringBoard clobbered `backboardd`'s Mach notification port upon startup.
-   - Guarded [`OP2ButtonsUserClient::registerNotificationPort`](file:///Users/veerhooda/Downloads/OnePlus%202/xnu/xnu-4903.270.47/iokit/Kernel/arm/OP2Digitizer.cpp#L1072) to enforce `backboardd` port exclusivity.
+   - Guarded [`OP2ButtonsUserClient::registerNotificationPort`](../xnu/xnu-4903.270.47/iokit/Kernel/arm/OP2Digitizer.cpp#L1072) to enforce `backboardd` port exclusivity.
    - **Result:** Exact match in telemetry: `OP2 Buttons: ignoring notification port from SpringBoard (preserving backboardd port)`. Dropped key events were reduced to **exactly zero** across 3,000 seconds.
 3. **IOSurface Memory Architecture & `DC ZVA` Alignment Fix:**
    - Identified and resolved the root cause of the `Unaligned kernel data abort (ESR 0x96000061)` in `bzero`: ARM64's `dc zva` instruction faults when issued against Device / MMIO memory.
-   - Partitioned surface allocation in [`OP2Surface.cpp`](file:///Users/veerhooda/Downloads/OnePlus%202/xnu/xnu-4903.270.47/iokit/Kernel/arm/OP2Surface.cpp#L806):
+   - Partitioned surface allocation in [`OP2Surface.cpp`](../xnu/xnu-4903.270.47/iokit/Kernel/arm/OP2Surface.cpp#L806):
      - Display surfaces matching native panel dimensions ($1080 \times 1920$) allocate from the physical MDSS continuous splash carveout with `kIOMapWriteCombineCache` for zero-copy hardware scanout.
      - Retina UI render surfaces ($1242 \times 2208$, e.g., SpringBoard Surfaces 3 and 4) allocate from **normal kernel-managed system RAM** (`IOBufferMemoryDescriptor`) mapped with `kIOMapDefaultCache`.
    - Enabled Cortex-A53 L1/L2 data caching and hardware prefetchers for userland QuartzCore software rasterization and kernel downsampling.
 4. **13.7 Millisecond 64-Bit Pair Store Downsampler:**
-   - Replaced scalar single-pixel stores in [`OP2Framebuffer.cpp`](file:///Users/veerhooda/Downloads/OnePlus%202/xnu/xnu-4903.270.47/iokit/Kernel/arm/OP2Framebuffer.cpp#L948) with 64-bit word pair stores (`uint64_t`), halving store instruction count and bus transactions.
+   - Replaced scalar single-pixel stores in [`OP2Framebuffer.cpp`](../xnu/xnu-4903.270.47/iokit/Kernel/arm/OP2Framebuffer.cpp#L948) with 64-bit word pair stores (`uint64_t`), halving store instruction count and bus transactions.
    - Active timing telemetry via `mach_absolute_time()` confirmed downsampling time dropped from $> 100\text{ ms}$ uncached DRAM stalls down to **13.72 milliseconds** per $1242 \times 2208$ frame.
    - $13.7\text{ ms}$ fits comfortably within the $16.6\text{ ms}$ (60 Hz) refresh interval.
 5. **Full UI Flow & Wallpaper Verification:**

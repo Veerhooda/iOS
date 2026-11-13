@@ -140,23 +140,46 @@ round).
 
 Next: stage 2, the shell (dash + toybox, /dev/op2usb character device on the in/out rings, launchd job).
 
-## Stage 2 WORKS (2026-11-13 ~03:17 IST)
+## Stage 2 WORKS (2026-11-13 ~03:17 IST; job control fixed later the same day)
 
-The launchd job `com.op2.shell` in the xpcd cache starts `/usr/local/bin/op2-air-run` (the `op2shell` launcher).
-It installs dash/toybox/dropbear/scp, opens `/dev/op2usb`, and runs `dash -i`; the USB console shows the
-`OnePlus 2 iOS root shell (dash)` banner and an `op2#` prompt.
+The launchd job `com.op2.shell` in the xpcd cache starts `/usr/local/bin/op2-air-run` (the `op2shell` launcher,
+`userland/op2shell/op2shell.c`: embeds dash/toybox/dropbear/scp/`authorized_keys`, installs them when missing
+or differing, links `/bin/sh`, starts dropbear, then supervises `dash -i` on `/dev/op2usb`). The USB console
+shows the `OnePlus 2 iOS root shell (dash)` banner and an `op2#` prompt.
 
-## Stage 3 WORKS (2026-11-13 08:00 IST)
+TTY details (`bsd/dev/op2_usb.c`, `op2usb_ioctl`):
+- dash's job control needs `isatty()` true and `tcgetpgrp`/`tcsetpgrp` working. The driver answers
+  `TIOCGETA` (canned `TTYDEF_*` termios, 115200), `TIOCGPGRP`/`TIOCSPGRP` (foreground pgrp, lazily
+  defaulting to the caller's own group — anything else makes dash `SIGTTIN`-stop itself), and
+  `TIOCGWINSZ`/`TIOCSWINSZ` (24x80); `TIOCSETA*` stores. No controlling terminal (`TIOCSCTTY`
+  unimplemented by design); `TIOCSPGRP` validates via `pgfind` + same-session.
+- iOS 12 `isatty` does **not** use `TIOCGETA` in the common case: disassembled from the dyld shared
+  cache, it returns true iff `ioctl(FIODTYPE) == 3` (`D_TTY`), falling back to `tcgetattr` only when
+  `FIODTYPE` fails. For VCHR vnodes `FIODTYPE` is answered in `vfs_vnops.c` from the driver's `d_type`
+  field and never reaches `d_ioctl` — so the cdevsw must set `.d_type = D_TTY` (plain `0` keeps
+  `isatty` false no matter what the ioctl handler does).
+- `^C` in the line discipline sends `SIGINT` to the foreground group (falls back to the shell's group).
+- Every open runs a direct ioctl round-trip self-test (`OP2 USB: tty self-test: PASS/FAIL`) plus one
+  `fg pgrp` line on the shell's first live `TIOCSPGRP` — the proof dash completed the handshake.
 
-The fixed launcher (dropbear 2026.94 built with `DROPBEAR_SVR_DROP_PRIVS 0`, host keys via `-R`, embedded
-`authorized_keys`) serves SSH on the CDC-ECM link:
+## Stage 3 WORKS (verified 2026-11-13; launcher embeds dropbear + applet links into /bin)
 
-- Mac `en9` = 192.168.7.1/24 (MAC 02:00:5e:77:ee:01), phone `ue0` = 192.168.7.2/24 (MAC 02:00:5e:77:ee:02).
-- `ssh root@192.168.7.2` with `~/.ssh/id_ed25519` works; `/tmp/dropbear.log` shows `Pubkey auth succeeded`.
-- `scp -O` upload/download works after `ln -s /usr/local/bin/scp /usr/bin/scp`: dropbear gives non-login
-  sessions `PATH=/usr/sbin:/usr/bin:/sbin:/bin`, so the remote scp needs the link. Interactive logins get
-  `/usr/local/bin` from `/var/root/.profile` (`export PATH=/usr/local/bin:$PATH`).
-- Toybox `id` segfaults on iOS 12 (avoid it); `date` is not built. Everything else in the applet set works.
-- Test transcript: `logs/ssh-test.txt`.
+The launcher (`userland/op2shell/op2shell.c`, built by `tools/build-op2shell.sh`, installed with `--install`
+in TWRP) embeds dropbear 2026.94 (built with `DROPBEAR_SVR_DROP_PRIVS 0` + stream-forwarding off, iOS has
+no `setresgid()`), `scp`, toybox, and `authorized_keys` (from `~/.ssh/id_ed25519.pub`). At boot it installs
+them to `/usr/local/bin`, symlinks every applet plus `dash`/`scp` into `/bin` (lstat-guarded, never shadows),
+links `/bin/sh` to dash (dropbear runs the login shell through it), and starts `dropbear -R -E -p 22`
+(host keys auto-created in `/etc/dropbear`, log to `/tmp/dropbear.log`).
+
+- Mac `enX` = 192.168.7.1/24 (MAC 02:00:5e:77:ee:01), phone `ue0` = 192.168.7.2/24 (MAC 02:00:5e:77:ee:02).
+- `ssh root@192.168.7.2` with `~/.ssh/id_ed25519` works (exec verified; `Pubkey auth succeeded` in the
+  server log). Interactive pty sessions use the same path — verify by hand from a terminal.
+- `scp -O` upload and download verified (legacy protocol: no sftp-server on device). The `/bin`
+  symlinks make bare `ls`, `grep`, `cat` etc. work over ssh exec; without them only absolute paths work
+  (dropbear's non-login `PATH` lacks `/usr/local/bin`).
+- Toybox `id` segfaults on iOS 12 (verified: exit 139, avoid it); `date` is not built. Everything else
+  in the applet set works.
+- Test transcript (first bring-up): `logs/ssh-test.txt`.
 - Build recipes: `tools/build-toybox.sh`, `tools/build-dropbear.sh`, then `tools/build-op2shell.sh --install`
-  (phone in TWRP). The dropbear binary rebuilt from the recipe is byte-identical to the installed one.
+  (phone in TWRP). Host paths are portable via `tools/env.sh` (`XCODE_ROOT`, default `$HOME/xcode-10.3`).
+- Replicate from scratch: `docs/SETUP.md`.

@@ -6,7 +6,9 @@
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SDK="/Users/veerhooda/xcode-10.3/Xcode.app/Contents/Developer/Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS12.4.sdk"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/tools/env.sh"
+op2_require_xcode || exit 1
+SDK="$IPHONEOS_SDK"
 
 echo "[BUILD] Compiling OP2Metal bundle..."
 mkdir -p "${DIR}/build/OP2Metal.bundle"

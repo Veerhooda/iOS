@@ -5,7 +5,7 @@
 **OS Version:** iOS 12.5.7 (`16H81`, iPhone 6 Plus `n56ap`)  
 **Kernel:** Darwin 18.7.0 (`xnu-4903.270.47`, quad-core Cortex-A53 SMP `cpus=4`)  
 **Execution Timestamp:** November 9, 2026  
-**Diagnostic Evidence:** [`logs/hardware-milestone20-smooth-lockscreen-homescreen-ramoops.log`](file:///Users/veerhooda/Downloads/OnePlus%202/logs/hardware-milestone20-smooth-lockscreen-homescreen-ramoops.log) (260,000 bytes harvested from `/sys/fs/pstore/console-ramoops-0`)
+**Diagnostic Evidence:** `logs/hardware-milestone20-smooth-lockscreen-homescreen-ramoops.log` (260,000 bytes harvested from `/sys/fs/pstore/console-ramoops-0`)
 
 ---
 
@@ -22,13 +22,13 @@ Milestone 20 resolves all issues observed during extended soak execution (sluggi
    - The physical JDI 1080×1920 panel illuminated with **1,984 non-zero pixels out of 2,000 sampled** (99.2% full-color coverage), replacing the prior black-background clock outline (`28/2000`).
 
 3. **60 fps VSync & 8x Unrolled Downsampling (Jitter Eliminated):**
-   - Reduced the hardware kick spacing threshold in [`OP2Framebuffer.cpp`](file:///Users/veerhooda/Downloads/OnePlus%202/xnu/xnu-4903.270.47/iokit/Kernel/arm/OP2Framebuffer.cpp) from `640000ULL` (30 Hz cap) to `280000ULL` (68 Hz threshold), allowing full 60 fps panel updates.
+   - Reduced the hardware kick spacing threshold in [`OP2Framebuffer.cpp`](../xnu/xnu-4903.270.47/iokit/Kernel/arm/OP2Framebuffer.cpp) from `640000ULL` (30 Hz cap) to `280000ULL` (68 Hz threshold), allowing full 60 fps panel updates.
    - Precomputed `sy_map[1920]` scanline table and unrolled the $1242 \times 2208 \to 1080 \times 1920$ downsample inner loop by 8x, slashing frame copy latency by ~4x.
 
 4. **SpringBoard Respawn Auto-Unlock & Capacitive Home Emulation:**
-   - Added SpringBoard respawn detection (`cur_shown >= s_last_tracked_shown + 2`) in [`OP2Digitizer.cpp`](file:///Users/veerhooda/Downloads/OnePlus%202/xnu/xnu-4903.270.47/iokit/Kernel/arm/OP2Digitizer.cpp) to re-arm the unlock sequence automatically if SpringBoard ever restarts.
+   - Added SpringBoard respawn detection (`cur_shown >= s_last_tracked_shown + 2`) in [`OP2Digitizer.cpp`](../xnu/xnu-4903.270.47/iokit/Kernel/arm/OP2Digitizer.cpp) to re-arm the unlock sequence automatically if SpringBoard ever restarts.
    - Configured dual-pulse periodic Home keep-alive (wake + unlock pulse) every ~50 seconds to prevent Lock Screen lockup.
-   - Mapped bottom-bezel capacitive touch coordinates ($y > 1820$, $360 < x < 720$) in [`OP2I2C.cpp`](file:///Users/veerhooda/Downloads/OnePlus%202/xnu/xnu-4903.270.47/iokit/Kernel/arm/OP2I2C.cpp) to physical Home button events.
+   - Mapped bottom-bezel capacitive touch coordinates ($y > 1820$, $360 < x < 720$) in [`OP2I2C.cpp`](../xnu/xnu-4903.270.47/iokit/Kernel/arm/OP2I2C.cpp) to physical Home button events.
 
 ---
 
@@ -70,7 +70,7 @@ flowchart TD
 
 ## 3. Empirical Silicon Harvest & Proof
 
-Extracted directly from [`logs/hardware-milestone20-smooth-lockscreen-homescreen-ramoops.log`](file:///Users/veerhooda/Downloads/OnePlus%202/logs/hardware-milestone20-smooth-lockscreen-homescreen-ramoops.log):
+Extracted directly from `logs/hardware-milestone20-smooth-lockscreen-homescreen-ramoops.log`:
 
 ### 3.1 Display Hand-Off & Full Wallpaper Illumination
 ```text

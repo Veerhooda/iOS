@@ -177,5 +177,5 @@ PROC_EXIT: pid=11[tzinit] rv=0x0 (sig 0, exit 0) reason_ns=0 code=0x0
   - Signs `metal_test` with `-i com.apple.tzinit` satisfying launchd boot-task validation.
 - [`tools/run-phase3.py`](../tools/run-phase3.py):
   - Fully automated execution and pstore ramoops harvesting harness for Phase 3.
-- [`logs/hardware-phase3-ramoops.log`](../logs/hardware-phase3-ramoops.log):
+- `logs/hardware-phase3-ramoops.log`:
   - Raw hardware execution trace harvested directly from physical OnePlus 2 pstore console memory.

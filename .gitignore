@@ -10,6 +10,8 @@ xnu/xnu-*/
 
 # Logs & temp binaries
 logs/
+# Private history: AI chat transcripts, session prompts, local notes. Never pushed.
+history/
 *.img
 *.simg
 *.bin

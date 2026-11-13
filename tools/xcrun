@@ -5,7 +5,7 @@
 # xcodebuild -find queries on modern macOS.
 #
 
-XCODE_ROOT="/Users/veerhooda/xcode-10.3/Xcode.app/Contents/Developer"
+XCODE_ROOT="${XCODE_ROOT:-$HOME/xcode-10.3/Xcode.app/Contents/Developer}"
 TOOLCHAIN="${XCODE_ROOT}/Toolchains/XcodeDefault.xctoolchain/usr/bin"
 TOOLCHAIN_LIBEXEC="${XCODE_ROOT}/Toolchains/XcodeDefault.xctoolchain/usr/libexec"
 MACOSX_SDK="${XCODE_ROOT}/Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.14.sdk"
