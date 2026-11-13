@@ -820,6 +820,8 @@ commandBufferCommit(id self, __unused SEL _cmd)
 	struct op2_cmd_buf *cb = slot ? (struct op2_cmd_buf *)*slot : NULL;
 	if (cb) {
 		cb->status = MTLCommandBufferStatusCommitted;
+		if (gMtl && cb->work)
+			gpuCommit();
 		if (cb->presentedDrawable != nil) {
 			static uint32_t sLogCommitCount = 0;
 			if (++sLogCommitCount <= 3) {
@@ -828,22 +830,7 @@ commandBufferCommit(id self, __unused SEL _cmd)
 			if ([cb->presentedDrawable respondsToSelector:@selector(present)]) {
 				[cb->presentedDrawable present];
 			}
-			/* Kick display panel scanout via kOP2Show */
-			io_connect_t connect = 0;
-			io_service_t service = IOServiceGetMatchingService(kIOMasterPortDefault, IOServiceMatching("IOAcceleratorES"));
-			if (!service) {
-				service = IOServiceGetMatchingService(kIOMasterPortDefault, IOServiceMatching("IOAccelerator"));
-			}
-			if (service) {
-				if (IOServiceOpen(service, mach_task_self(), 0, &connect) == KERN_SUCCESS && connect) {
-					IOConnectCallScalarMethod(connect, 0x7f /* kOP2Show */, NULL, 0, NULL, NULL);
-					IOServiceClose(connect);
-				}
-				IOObjectRelease(service);
-			}
 		}
-		if (gMtl && cb->work)
-			gpuCommit();
 		cb->status = MTLCommandBufferStatusCompleted;
 		NSArray *handlers = cb->handlers;
 		cb->handlers = nil;

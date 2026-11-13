@@ -7,7 +7,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-CMDLINE="-v cpus=4 keepsyms=1 op2_deadline=${DEADLINE:-7200} rd=emmcroot0 emmcroot=userdata rootrw=1 emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 op2fb_client_ui=0 op2_autoinput=${AUTOIN:-1} op2fb_keepon=1 op2_userlog=0${EXTRA:+ $EXTRA}"
+CMDLINE="-v cpus=4 keepsyms=1 op2_deadline=${DEADLINE:-7200} rd=emmcroot0 emmcroot=userdata rootrw=1 emmcrw=1 cs_enforcement_disable=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 op2fb_client_ui=0 op2_autoinput=${AUTOIN:-1} op2fb_keepon=1 op2_userlog=0 metal=3${EXTRA:+ $EXTRA}"
 if [ ${#CMDLINE} -ge 250 ]; then
   echo "cmdline is ${#CMDLINE} bytes; XNU truncates at 255. Trim it." >&2; exit 1
 fi
