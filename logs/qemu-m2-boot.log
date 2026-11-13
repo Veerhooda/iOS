@@ -1,119 +1,0 @@
-
-=======================================================
-  [ONEPLUS2-SHIM] M2 Bootloader & XNU Stage Active
-=======================================================
-  Actual Entry PC : 0x0000000050000000
-  CurrentEL       : EL1
-  FDT Pointer (x0): 0x0000000048A00000
-  FDT Header Magic: 0xD00DFEED
-  Initrd Start    : 0x0000000048000000
-  Initrd End      : 0x00000000489B8940 (Length: 009B8940 bytes)
-
-[SHIM] Initiating Darwin/XNU payload boot sequence...
-[LOADER] Found ramdisk at 0x0000000048000000 .. 0x00000000489B8940 (009B8940 bytes)
-[LOADER] Valid OP2XNU01 payload detected!
-  PhysBase   : 0x0000000040000000
-  MemSize    : 0x000000003FF00000
-  VirtBase   : 0xFFFFFFF007000000
-  EntryVA    : 0xFFFFFFF0070F0098
-  Segments   : 08
-  [LOADER] Seg 00: dst=0x0000000040004000 sz=0x000C0000
-  [LOADER] Seg 01: dst=0x00000000400C4000 sz=0x00028000
-  [LOADER] Seg 02: dst=0x00000000400EC000 sz=0x006D4000
-  [LOADER] Seg 03: dst=0x00000000407C0000 sz=0x00004000
-  [LOADER] Seg 04: dst=0x00000000407C4000 sz=0x00004000
-  [LOADER] Seg 05: dst=0x00000000407C8000 sz=0x0004C000
-  [LOADER] Seg 06: dst=0x00000000408A4000 sz=0x00018000
-  [LOADER] Seg 07: dst=0x00000000408BC000 sz=0x0018ED58
-[LOADER] Segments relocated successfully.
-[LOADER] ADT placed at PA 0x0000000040A4B000 (001984 bytes)
-[LOADER] boot_args placed at PA 0x0000000040A4D000, topOfKernelData = 0x0000000040A4E000
-  Cmdline: -v debug=0x10014e serial=3 cpus=1 keepsyms=1 -use_hwpagesize
-[LOADER] Kernel Entry Point PA: 0x00000000400F0098
-[LOADER] Flushing CPU caches and transferring control to Darwin/XNU...
-
-kprintf initialized
-Serial mode specified: 00000003
-initialize_screen: b=00000000, w=00000000, h=00000000, r=00000000, d=00000000
-initialize_screen: No video - forcing serial mode
-pe_arm_init_interrupts: args: 0xfffffff00784e020
-pe_arm_map_interrupt_controller: soc_phys:  0x1000000
-pe_arm_map_interrupt_controller: failed to find the interrupt-controller.
-pe_arm_init_debug: failed to find cpu-debug-interface
-Darwin Kernel Version 18.7.0: Sun Oct 25 01:49:29 IST 2026; veerhooda:xnu-4903.270.47[xnu-4903.270.47-4-gb73ad17]/BUILD/obj/DEVELOPMENT_ARM64_MSM8994
-pmap_startup() init/release time: 17767 microsec
-pmap_startup() delayed init/release of 0 pages
-vm_page_bootstrap: 255203 free pages, 6685 wired pages, (up to 0 of which are delayed free)
-zone leak detection disabled
-zalloc: allocating memory for zone names buffer
-"vm_compressor_mode" is 8
-oslog_init completed, 16 chunks, 8 io pages
-Telemetry: Sampling all tasks once per 1 second
-Scheduler: Default of dualq
-Setting scheduler priority decay band limit 18
-standard timeslicing quantum is 10000 us
-standard background quantum is 2500 us
-WQ[wql_init]: init linktable with max:262144 elements (8388608 bytes)
-WQ[wqp_init]: init prepost table with max:262144 elements (8388608 bytes)
-mig_table_max_displ = 51
-ATM subsystem is initialized
-BANK subsystem is initialized
-IPC_PTHREAD_PRIORITY subsystem is initialized
-kdp_core zlib memory 0x7000
-Registered coredump handler for kernel
-Serial requested, consistent debug disabled or debug boot arg not present, configuring debugging over serial
-Initializing serial KDP
-iBoot version: oneplus2-shim
-panic(cpu 0 caller 0xfffffff00775706c): "Unable to find driver for this platform: \"N56AP\".\n"
-Debugger message: panic
-Device: N56
-Hardware Model: iPhone7,1
-ECID: 4F50320000000001
-Boot args: -v debug=0x10014e serial=3 cpus=1 keepsyms=1 -use_hwpagesize
-Memory ID: 0x0
-OS version: Not set yet
-Kernel version: Darwin Kernel Version 18.7.0: Sun Oct 25 01:49:29 IST 2026; veerhooda:xnu-4903.270.47[xnu-4903.270.47-4-gb73ad17]/BUILD/obj/DEVELOPMENT_ARM64_MSM8994
-Kernel UUID: FD976135-2209-3AC8-9B2F-CCB079484903
-iBoot version: oneplus2-shim
-secure boot?: NO
-Paniclog version: 13
-mach_absolute_time: 0x533ae2
-Epoch Time:        sec       usec
-  Boot    : 0x00000000 0x00000000
-  Sleep   : 0x00000000 0x00000000
-  Wake    : 0x00000000 0x00000000
-  Calendar: 0x00000000 0x00000000
-
-Panicked task 0xfffffff0692671f0: 3570 pages, 13 threads: NULL bsd_info pointer
-unknown task
-Panicked thread: 0xfffffff0692805d8, backtrace: 0xfffffff0031c3480, tid: 113
-		  lr: 0xfffffff0071389e8  fp: 0xfffffff0031c34f0
-		  lr: 0xfffffff007138848  fp: 0xfffffff0031c3560
-		  lr: 0xfffffff0072a48a0  fp: 0xfffffff0031c3590
-		  lr: 0xfffffff007299e7c  fp: 0xfffffff0031c3640
-		  lr: 0xfffffff0070ef5e4  fp: 0xfffffff0031c3650
-		  lr: 0xfffffff007137f30  fp: 0xfffffff0031c39f0
-		  lr: 0xfffffff0071383b8  fp: 0xfffffff0031c3a50
-		  lr: 0xfffffff00713815c  fp: 0xfffffff0031c3a70
-		  lr: 0xfffffff00775706c  fp: 0xfffffff0031c3a90
-		  lr: 0xfffffff007712a24  fp: 0xfffffff0031c3ae0
-		  lr: 0xfffffff007712718  fp: 0xfffffff0031c3b90
-		  lr: 0xfffffff007711b4c  fp: 0xfffffff0031c3c00
-		  lr: 0xfffffff007713c34  fp: 0xfffffff0031c3c90
-		  lr: 0xfffffff0070f23f4  fp: 0x0000000000000000
-
-
-** Stackshot Succeeded ** Bytes Traced 5104 **
-Attempting system restart...MACH Reboot
-Nested panic detected:"Attempt to take mutex with preemption disabled. Lock=0xfffffff0692b88d0, level=1"panic(cpu 0 caller 0xfffffff00775706c): "Unable to find driver for this platform: \"N56AP\".\n"
-Attempting system restart...MACH Reboot
-Nested panic detected:"Attempt to take mutex with preemption disabled. Lock=0xfffffff0692b88d0, level=2"panic(cpu 0 caller 0xfffffff00775706c): "Unable to find driver for this platform: \"N56AP\".\n"
-Attempting system restart...MACH Reboot
-Nested panic detected:"Attempt to take mutex with preemption disabled. Lock=0xfffffff0692b88d0, level=3"panic(cpu 0 caller 0xfffffff00775706c): "Unable to find driver for this platform: \"N56AP\".\n"
-Attempting system restart...MACH Reboot
-Nested panic detected:"Attempt to take mutex with preemption disabled. Lock=0xfffffff0692b88d0, level=4"panic(cpu 0 caller 0xfffffff00775706c): "Unable to find driver for this platform: \"N56AP\".\n"
-Attempting system restart...MACH Reboot
-Detected nested debugger entry count exceeding 5
-
-Please go to https://panic.apple.com to report this panic
-qemu-system-aarch64: terminating on signal 15 from pid 65353 (<unknown process>)
