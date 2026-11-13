@@ -168,6 +168,7 @@ The launcher (`userland/op2shell/op2shell.c`, built by `tools/build-op2shell.sh`
 in TWRP) embeds dropbear 2026.94 (built with `DROPBEAR_SVR_DROP_PRIVS 0` + stream-forwarding off, iOS has
 no `setresgid()`), `scp`, toybox, and `authorized_keys` (from `~/.ssh/id_ed25519.pub`). At boot it installs
 them to `/usr/local/bin`, symlinks every applet plus `dash`/`scp` into `/bin` (lstat-guarded, never shadows),
+writes `/var/root/.profile` (`export PATH=/usr/local/bin:$PATH`) for interactive logins,
 links `/bin/sh` to dash (dropbear runs the login shell through it), and starts `dropbear -R -E -p 22`
 (host keys auto-created in `/etc/dropbear`, log to `/tmp/dropbear.log`).
 
