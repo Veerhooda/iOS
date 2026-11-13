@@ -14,16 +14,18 @@ The kernel lives in its own repository: [Veerhooda/xnu](https://github.com/Veerh
 
 ---
 
-## Status (2026-11-11)
+## Status (2026-11-13)
 
 | Area | State | Evidence |
 |---|---|---|
 | Boot | LK `boot.img` → shim → XNU → launchd → SpringBoard, Lock Screen and Home Screen | every round in `logs/` |
-| CPU | 4 × Cortex-A53, clocked to **1536 MHz** (`op2_cpu_boost`, stock voltages) | `OP2 TOP:` lines, measured with the PMU cycle counter |
+| CPU | 4 × Cortex-A53 with thermal management (TSENS, throttle at 70 °C, cutoff at 90 °C) | `OP2 TOP:` lines with temperature |
 | Storage | SDHCI eMMC 5.0, multi-block reads (CMD18) with a boot self-test, journaled HFS+ root | `OP2 eMMC MULTI: … fails=0` |
 | Display | MDP5 command-mode panel, double-buffered, SwapWait honoured, ~6 ms CPU downsample 1242×2208 → 1080×1920 | `OP2 FB PERF:` lines |
 | Input | Synaptics S3320 touch; Home = a touch starting on the bottom strip; synthetic input only to wake (`op2_autoinput=1`) | |
-| **GPU (Adreno 430)** | **Draws correctly on the hardware** through Mesa's freedreno driver, including CoreAnimation's own shaders; not yet used by the UI | [docs/GPU-PLAN.md](docs/GPU-PLAN.md) |
+| **GPU (Adreno 430)** | **Composites the UI on the hardware** (`metal=3`: home/lock screens, dock blur); OrangeTree game still blank (SpriteKit pipelines fail in the shim) | [docs/GPU-PLAN.md](docs/GPU-PLAN.md) |
+| **USB serial + shell** | CDC-ACM live kernel log; root `dash` shell with job control and toybox applets | [docs/USB-CONSOLE-PLAN.md](docs/USB-CONSOLE-PLAN.md) |
+| **USB Ethernet + SSH** | Composite CDC-ECM (`ue0` 192.168.7.2), `ping` works; dropbear SSH: exec, `scp -O`, pubkey auth | [docs/USB-CONSOLE-PLAN.md](docs/USB-CONSOLE-PLAN.md) |
 | Known crashes | logd SIGBUS/SIGSEGV loop, Spotlight extensions SIGABRT loop, occasional SpringBoard SIGSEGV | [CLAUDE.md](CLAUDE.md) |
 
 ### GPU bring-up, stage by stage
@@ -43,8 +45,11 @@ Everything here was measured on the phone; the details and logs are in [docs/GPU
 
 ## How a test round works
 
-The phone has no shell and broken volume/power buttons. Every boot is a RAM boot of a freshly built image, with a
-software deadline that resets the phone back into TWRP, where the kernel log is pulled from ramoops.
+Our unit's volume/power buttons are broken, so nothing here relies on them (a unit with working buttons
+behaves the same). Every boot is a RAM boot of a freshly built image, with a software deadline that resets
+the phone back into TWRP, where the kernel log is pulled from ramoops. The phone has a root shell two ways:
+over USB serial (`screen /dev/cu.usbmodem*`, `op2#` prompt) and over SSH (`ssh root@192.168.7.2`, set the Mac
+side to 192.168.7.1 first — see [docs/USB-CONSOLE-PLAN.md](docs/USB-CONSOLE-PLAN.md)).
 
 ```bash
 bash tools/round.sh                 # build kernel + boot image, RAM-boot, wait for the reset, save the log
@@ -87,8 +92,12 @@ Getting a program onto the phone and started:
   `launchd_unsecure_cache=1` lets launchd accept it). A plist dropped into `LaunchDaemons/` alone is ignored.
 * `tools/fc-from-log.py` turns OP2Metal's function-constant capture lines (boot with `metal=2`) into compiler input.
 
-Host requirements: macOS, Xcode 10.3 (its iPhoneOS 12.4 SDK and libc++ headers), Python 3, `adb`/`fastboot`.
+Host requirements: macOS on Apple Silicon, Xcode 10.3 at `~/xcode-10.3` (its iPhoneOS 12.4 SDK
+and libc++ headers; override with `XCODE_ROOT`), Python 3, `adb`/`fastboot`.
 Mesa's build tools (meson, ninja, bison 3.8) are installed by the scripts into `out/`, not system-wide.
+`sh`/`dash`/`toybox`/`dropbear` userland pieces: `bash tools/build-toybox.sh`, `bash tools/build-dropbear.sh`,
+then `bash tools/build-op2shell.sh` (embeds everything + your `~/.ssh/id_ed25519.pub`; `--install` in TWRP).
+See [docs/SETUP.md](docs/SETUP.md) for the full replication guide (file placement, build order, loop).
 
 ---
 
@@ -100,12 +109,17 @@ Mesa's build tools (meson, ninja, bison 3.8) are installed by the scripts into `
   * [`tools/ios-iokit/`](tools/ios-iokit/) — the few IOKit user-client declarations the iOS SDK lacks headers for.
 * [`userland/OP2Metal/`](userland/OP2Metal/) — the Metal plug-in shell iOS loads for our GPU; also captures function constants.
 * [`userland/op2gpu/`](userland/op2gpu/) — command-processor blit library, fake GPU, phone probe.
-* [`docs/`](docs/) — [GPU plan and results](docs/GPU-PLAN.md), [audit](docs/AUDIT-2026-11-11.md),
-  [how it boots](docs/HOW-IT-BOOTS.md), [kernel changes](docs/OP2_KERNEL_CHANGES.md), [hacks](docs/HACKS.md), history.
+* [`docs/`](docs/) — [setup/replication guide](docs/SETUP.md), [doc index](docs/README.md),
+  [USB serial/shell/Ethernet/SSH](docs/USB-CONSOLE-PLAN.md), [GPU plan and results](docs/GPU-PLAN.md),
+  [audit](docs/AUDIT-2026-11-11.md), [how it boots](docs/HOW-IT-BOOTS.md),
+  [kernel changes](docs/OP2_KERNEL_CHANGES.md), [hacks](docs/HACKS.md), history.
+* `history/` — private by design (AI chat transcripts, session prompts); gitignored, never pushed.
+* [`userland/op2shell/`](userland/op2shell/) — the root-shell/SSH launcher (dash+toybox+dropbear+scp).
+* `tools/env.sh` — shared host paths (`XCODE_ROOT`, SDKs); every build script sources it.
 * [`CLAUDE.md`](CLAUDE.md) — short working notes: current state, loop, rules.
 * `kernel-backup/` — copies of kernel sources before risky edits.
-* Not in the repository: `xnu/` (its own repo), `reference/`, `research/`, `logs/`, `backup/`, `out/` — device dumps,
-  Apple binaries and build output.
+* Not in the repository: `xnu/` (its own repo), `reference/`, `research/`, `logs/`, `backup/`, `out/`, `history/` —
+  device dumps, Apple binaries and build output.
 
 ---
 
