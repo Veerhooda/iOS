@@ -7,10 +7,6 @@ launchd, backboardd and SpringBoard to the Lock Screen and Home Screen.
 
 The kernel lives in its own repository: [Veerhooda/xnu](https://github.com/Veerhooda/xnu) (branch `msm8994`).
 
-> **About the older milestone documents.** An audit on 2026-11-11 ([docs/AUDIT-2026-11-11.md](docs/AUDIT-2026-11-11.md))
-> found that several earlier "verified" milestones were driven by a scripted fake user inside the touch driver,
-> that "0 crashes" was not true, and that the GPU had never executed a single command. The status below is what
-> has been measured since; the `docs/milestone-*.md` files are kept as history, not as claims.
 
 ---
 
